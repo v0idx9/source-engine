@@ -13,24 +13,53 @@
 // NOTE: This has to be the last file included!
 #include "tier0/memdbgon.h"
 
+struct FingerSlot {
+    SDL_FingerID id = 0;
+    bool active = false;
+};
+
+FingerSlot fingers[TOUCH_FINGER_MAX_COUNT];
 //-----------------------------------------------------------------------------
 // Handle the events coming from the Touch SDL subsystem.
 //-----------------------------------------------------------------------------
 int TouchSDLWatcher( void *userInfo, SDL_Event *event )
 {
 	CInputSystem *pInputSystem = (CInputSystem *)userInfo;
+	SDL_FingerID sdlId = event->tfinger.fingerId;
 
 	if( !event || !pInputSystem ) return 1;
 
 	switch ( event->type ) {
 	case SDL_FINGERDOWN:
-		pInputSystem->FingerEvent( IE_FingerDown, event->tfinger.fingerId, event->tfinger.x, event->tfinger.y, event->tfinger.dx, event->tfinger.dy );
+		for (int i = 0; i < TOUCH_FINGER_MAX_COUNT; ++i) {
+            if (!fingers[i].active) {
+                fingers[i].id = sdlId;
+                fingers[i].active = true;
+				printf("Finger %d down, with id %d\n", i, sdlId);
+				//pInputSystem->FingerEvent( IE_FingerDown, i, event->tfinger.x, event->tfinger.y, event->tfinger.dx, event->tfinger.dy );
+				break;
+            }
+    	}
 		break;
 	case SDL_FINGERUP:
-		pInputSystem->FingerEvent( IE_FingerUp, event->tfinger.fingerId, event->tfinger.x, event->tfinger.y, event->tfinger.dx, event->tfinger.dy );
-		break;
+		for (int i = 0; i < TOUCH_FINGER_MAX_COUNT; ++i) {
+            if (fingers[i].active && fingers[i].id == sdlId) {
+                fingers[i].active = false;
+                fingers[i].id = 0;
+				pInputSystem->FingerEvent( IE_FingerUp, i, event->tfinger.x, event->tfinger.y, event->tfinger.dx, event->tfinger.dy );
+                //printf("Finger %d lifted, with id %d\n", i, sdlId);
+				break;
+            }
+        }
+	break;
 	case SDL_FINGERMOTION:
-		pInputSystem->FingerEvent( IE_FingerMotion ,event->tfinger.fingerId, event->tfinger.x, event->tfinger.y, event->tfinger.dx, event->tfinger.dy );
+		for (int i = 0; i < TOUCH_FINGER_MAX_COUNT; ++i) {
+        	if (fingers[i].active && fingers[i].id == sdlId) {
+				pInputSystem->FingerEvent( IE_FingerMotion ,i, event->tfinger.x, event->tfinger.y, event->tfinger.dx, event->tfinger.dy );
+				//printf("Finger %d moved, with id %d\n", i, sdlId);
+				break;
+        	}
+        }
 		break;
 	}
 

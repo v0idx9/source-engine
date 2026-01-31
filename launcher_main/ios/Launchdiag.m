@@ -174,7 +174,7 @@ void IOS_LaunchDialog( void )
 	}
 	szArgc = count + 1;
 	szArgv[count + 1] = 0;
-	szArgv[0] = "hl2_launcher";
+	szArgv[0] = IOS_GetExecDir();
 
 	alert.delegate = nil;
 
@@ -191,8 +191,6 @@ int IOS_GetArgs( char ***out )
 	if(szArgv != NULL)
 	{
 		*out = szArgv;
-		NSLog(@"pointer value is: %p", szArgv);
 		return szArgc;
 	}
-	NSLog(@"Error szArgv is null, pointer value is: %p", szArgv);
 }

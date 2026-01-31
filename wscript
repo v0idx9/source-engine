@@ -340,6 +340,9 @@ def options(opt):
 	grp.add_option('--ios', action = 'store_true', dest = 'IOS', default = False,
 		help = 'build engine for iOS [default: %default]')
 	
+	grp.add_option('--simulator', action = 'store_true', dest = 'IOSSIM', default = False,
+		help = 'build engine for iOS simulator (Use with --ios) [default: %default]')
+	
 	grp.add_option('--angle', action = 'store_true', dest = 'ANGLE', default = False,
 		help = 'build engine with ANGLE instead of native OpenGLES [default: %default]')
 
