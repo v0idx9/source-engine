@@ -216,13 +216,22 @@ if [ ! -d "$FRAMEWORKS_DIR/SDL2.framework" ]; then
 	rm -rf "$FW"
 	mkdir -p "$FW"
 	SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+	# -force_load pulls in every object from libSDL2.a, including subsystems this
+	# engine doesn't use through this framework directly but which still need their
+	# symbols resolved at link time: SDL's built-in GLES1/GLES2 SDL_Renderer backends
+	# and EAGL-based SDL_uikitopenglview (OpenGLES.framework), SDL_iconv
+	# (iconv/iconv_open/iconv_close -> libiconv), Metal-based joystick/render hints
+	# (MTLCreateSystemDefaultDevice -> Metal.framework), and Bluetooth game controller
+	# support (CBAdvertisementDataLocalNameKey -> CoreBluetooth.framework). Full list
+	# cross-checked against every "referenced from" in a real failed link.
 	clang -dynamiclib \
 		--target=aarch64-apple-ios -mios-version-min=12.0 -isysroot "$SDKROOT" \
 		-Wl,-force_load,"$SDL_STATIC_LIB" \
 		-framework Foundation -framework UIKit -framework CoreGraphics \
 		-framework QuartzCore -framework CoreAudio -framework AudioToolbox \
 		-framework AVFoundation -framework CoreMotion -framework GameController \
-		-framework CoreHaptics \
+		-framework CoreHaptics -framework OpenGLES -framework Metal \
+		-framework CoreBluetooth -liconv \
 		-install_name "@rpath/SDL2.framework/SDL2" \
 		-o "$FW/SDL2"
 	cat > "$FW/Info.plist" <<PLIST
