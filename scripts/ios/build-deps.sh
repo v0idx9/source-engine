@@ -140,10 +140,17 @@ if [ ! -f "$LIBDIR/libjpeg.a" ]; then
 	cp "$OUT" "$LIBDIR/libjpeg.a"
 fi
 
-# --- freetype (kept dependency-free: no zlib/png/harfbuzz/bzip2/brotli) ---
+# --- freetype (png/harfbuzz/bzip2/brotli disabled; zlib pointed at our real libz.a) ---
+# FT_DISABLE_ZLIB=ON does NOT drop the gzip-compressed-font source file (ftgzip.c)
+# from the build -- it just makes that file fall back to freetype's own old bundled
+# zlib copy instead of a real one, and that fallback fails to build here ("error:
+# incompatible pointer types ... Bytef*"). Point it at our already-working real zlib
+# instead of disabling zlib entirely.
 if [ ! -f "$LIBDIR/libfreetype2.a" ]; then
 	OUT="$(cmake_build_static "$ROOT_DIR/thirdparty/freetype" freetype "libfreetype*.a" \
-		-DFT_DISABLE_ZLIB=ON -DFT_DISABLE_PNG=ON -DFT_DISABLE_HARFBUZZ=ON \
+		-DFT_DISABLE_ZLIB=OFF -DFT_REQUIRE_ZLIB=ON \
+		-DZLIB_INCLUDE_DIR="$ROOT_DIR/thirdparty/zlib" -DZLIB_LIBRARY="$LIBDIR/libz.a" \
+		-DFT_DISABLE_PNG=ON -DFT_DISABLE_HARFBUZZ=ON \
 		-DFT_DISABLE_BZIP2=ON -DFT_DISABLE_BROTLI=ON -DBUILD_SHARED_LIBS=OFF)"
 	cp "$OUT" "$LIBDIR/libfreetype2.a"
 fi
