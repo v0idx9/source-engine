@@ -31,7 +31,9 @@ GLMRendererInfo::GLMRendererInfo( GLMRendererInfoFields *info )
 	m_displays = NULL;
 		
 	// run queries.
-	char *gl_ext_string = (char*)gGL->glGetString(GL_EXTENSIONS);
+	// gGL can still be NULL here -- see the comment on the matching guard in
+	// PopulateRenderers(), which is what constructs this object in the first place.
+	char *gl_ext_string = gGL ? (char*)gGL->glGetString(GL_EXTENSIONS) : NULL;
 
 	uint vers = m_info.m_osComboVersion;
 	// avoid crashing due to strstr'ing NULL pointer returned from glGetString
@@ -385,8 +387,17 @@ void	GLMDisplayDB::PopulateRenderers( void )
     fields.m_accelerated   = 1;
     fields.m_windowed      = 1;
 
-    GLint maxSamples;
-    gGL->glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+    // gGL is not set up yet at this point: GLMContext::GLMContext() calls
+    // GetDesiredPixelFormatAttribsAndRendererInfo() (which reaches here) BEFORE
+    // GetGLContextForWindow()/eglMakeCurrent(), which is what actually assigns gGL
+    // (sdlmgr.cpp). Calling through it here is an unconditional NULL-pointer crash,
+    // every single time -- not something that depends on timing/state. There's no
+    // real number of MSAA samples to report yet either way, so just report 0.
+    GLint maxSamples = 0;
+    if ( gGL )
+    {
+        gGL->glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+    }
     fields.m_maxSamples = maxSamples;
 
     // iOS devices have unified memory; 512MB-1GB is a safe report for the engine
