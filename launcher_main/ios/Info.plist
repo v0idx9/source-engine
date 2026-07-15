@@ -54,5 +54,23 @@
 	<dict/>
 	<key>UIRequiresFullScreen</key>
 	<true/>
+	<!-- iOS hard-crashes an app (not just denies permission) the instant it touches
+	     CoreBluetooth/CoreMotion/AVAudioSession-recording APIs without the matching
+	     usage-description key present, even if the app never actually uses the
+	     feature at runtime. This vendored SDL2 has Bluetooth game-controller support
+	     compiled in (confirmed via an actual on-device crash right at library load,
+	     immediately followed by iOS prompting for Bluetooth) and sensor/motion
+	     support (SDL_SENSOR, enabled in build-deps.sh's SDL2 build), and
+	     launcher_main/ios/Launchdiag.m has a (deliberately disabled) microphone
+	     permission request with a comment noting it crashes without this ("otherwise
+	     we will crash when joining an online server") -- voice chat needs it. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Used for Bluetooth game controller support.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Used for Bluetooth game controller support.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Used for motion-based look/aim controls.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Used for voice chat on multiplayer servers.</string>
 </dict>
 </plist>
