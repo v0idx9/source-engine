@@ -85,7 +85,20 @@ for extra in "$FRAMEWORKS_DIR"/*.framework; do
 done
 shopt -u nullglob
 
-echo "=== Fixing up rpaths so the dynamic linker can find embedded frameworks ==="
+echo "=== Fixing up install names and rpaths so the dynamic linker can find embedded frameworks ==="
+# The prebuilt ANGLE frameworks (libEGL/libGLESv2) weren't built by this script, so
+# unlike the hand-wrapped SDL2.framework (built with -install_name @rpath/... above),
+# their own baked-in install name is unknown here -- it could be an @rpath reference,
+# or an absolute path from the machine that built them, which would never resolve on
+# the CI runner or an end-user device even with the right rpath added. Force each
+# framework's own ID to a clean @rpath form, and rewrite every consuming binary's
+# reference to match, whatever that reference originally looked like.
+for fw in SDL2 libEGL libGLESv2; do
+	fw_bin="$APP_DIR/Frameworks/$fw.framework/$fw"
+	[ -f "$fw_bin" ] || continue
+	install_name_tool -id "@rpath/$fw.framework/$fw" "$fw_bin"
+done
+
 # Every binary in the flat bundle root can potentially be the one that links
 # SDL2/libEGL/libGLESv2 directly (materialsystem/shaderapi, not necessarily the
 # launcher). @executable_path always resolves to the main executable's directory
@@ -93,7 +106,15 @@ echo "=== Fixing up rpaths so the dynamic linker can find embedded frameworks ==
 # so this is safe to apply broadly rather than guessing which one links what.
 for bin in "$APP_DIR/hl2_launcher" "$APP_DIR"/*.dylib; do
 	[ -f "$bin" ] || continue
-	if otool -L "$bin" 2>/dev/null | grep -qE "SDL2\.framework|libEGL\.framework|libGLESv2\.framework"; then
+	needs_rpath=0
+	for fw in SDL2 libEGL libGLESv2; do
+		old_ref="$(otool -L "$bin" 2>/dev/null | awk -v pat="$fw.framework/$fw" '$1 ~ pat {print $1; exit}')"
+		if [ -n "$old_ref" ] && [ "$old_ref" != "@rpath/$fw.framework/$fw" ]; then
+			install_name_tool -change "$old_ref" "@rpath/$fw.framework/$fw" "$bin"
+		fi
+		[ -n "$old_ref" ] && needs_rpath=1
+	done
+	if [ "$needs_rpath" = "1" ]; then
 		install_name_tool -add_rpath "@executable_path/Frameworks" "$bin" 2>/dev/null || true
 	fi
 done

@@ -24,23 +24,28 @@ JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
 mkdir -p "$LIBDIR" "$BUILD_ROOT"
 
+# IMPORTANT: every caller does `OUT="$(cmake_build_static ...)"`, which captures this
+# entire function's STDOUT, not just the final `echo "$found"` -- so every other line
+# in here must be redirected to stderr (>&2), or cmake's own multi-hundred-line
+# configure/build/install output ends up concatenated into $OUT, and the caller's
+# `cp "$OUT" ...` then fails trying to use that whole blob as a single filename.
 cmake_build_static() {
 	local src_dir="$1" build_subdir="$2" out_lib_name="$3"; shift 3
 	local build_dir="$BUILD_ROOT/$build_subdir"
-	echo "=== Building $build_subdir ==="
+	echo "=== Building $build_subdir ===" >&2
 	rm -rf "$build_dir"
 	cmake -S "$src_dir" -B "$build_dir" -G "Unix Makefiles" \
 		-DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX="$build_dir/install" \
 		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-		"$@"
+		"$@" >&2
 	if [ -n "${CMAKE_BUILD_TARGET:-}" ]; then
-		cmake --build "$build_dir" --parallel "$JOBS" --target "$CMAKE_BUILD_TARGET"
+		cmake --build "$build_dir" --parallel "$JOBS" --target "$CMAKE_BUILD_TARGET" >&2
 	else
-		cmake --build "$build_dir" --parallel "$JOBS"
+		cmake --build "$build_dir" --parallel "$JOBS" >&2
 	fi
-	cmake --install "$build_dir"
+	cmake --install "$build_dir" >&2
 	local found
 	# Search the install prefix first, then fall back to the raw build dir. Some of
 	# these libraries install both a versioned and unversioned name for the same lib
