@@ -35,7 +35,11 @@ cmake_build_static() {
 		-DCMAKE_INSTALL_PREFIX="$build_dir/install" \
 		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 		"$@"
-	cmake --build "$build_dir" --parallel "$JOBS"
+	if [ -n "${CMAKE_BUILD_TARGET:-}" ]; then
+		cmake --build "$build_dir" --parallel "$JOBS" --target "$CMAKE_BUILD_TARGET"
+	else
+		cmake --build "$build_dir" --parallel "$JOBS"
+	fi
 	cmake --install "$build_dir"
 	local found
 	found="$(find "$build_dir/install" "$build_dir" -maxdepth 3 -name "$out_lib_name" -print -quit)"
@@ -46,9 +50,41 @@ cmake_build_static() {
 	echo "$found"
 }
 
+# zutil.c includes "zutil.h" (which #define local static) before "gzguts.h" (which
+# does a fresh #include <stdio.h>). Under recent iOS SDKs that second, differently-
+# configured re-entry into <stdio.h> happens while "local" is already macro'd to
+# "static", corrupting an unrelated identifier in Apple's header and producing a
+# baffling "_stdio.h:322:7: error: expected identifier or '('". Only zutil.c is
+# affected -- the other gz*.c files include gzguts.h first, before any zlib macros
+# are defined. Force <stdio.h> to be fully (and cleanly) parsed before zutil.h ever
+# runs, so gzguts.h's later #include <stdio.h> is just a no-op via the include guard.
+ZUTIL_C="$ROOT_DIR/thirdparty/zlib/zutil.c"
+if [ -f "$ZUTIL_C" ] && ! head -1 "$ZUTIL_C" | grep -q '#include <stdio.h>'; then
+	echo "=== Patching zutil.c: hoist <stdio.h> before zutil.h's 'local' macro ==="
+	TMP_ZUTIL="$(mktemp)"
+	{ echo '#include <stdio.h> /* patched by scripts/ios/build-deps.sh, see comment there */'; cat "$ZUTIL_C"; } > "$TMP_ZUTIL"
+	mv "$TMP_ZUTIL" "$ZUTIL_C"
+fi
+
 # --- zlib ---
+# Classic zlib's CMakeLists always defines both "zlib" (shared) and "zlibstatic"
+# targets regardless of BUILD_SHARED_LIBS, and its install() rule references both --
+# so building only "zlibstatic" (to dodge an iOS shared-lib cross-compile) and then
+# running `cmake --install` would fail looking for the shared lib we never built.
+# Just grab the static lib straight out of the build dir instead of installing.
 if [ ! -f "$LIBDIR/libz.a" ]; then
-	OUT="$(cmake_build_static "$ROOT_DIR/thirdparty/zlib" zlib libz.a)"
+	ZLIB_BUILD_DIR="$BUILD_ROOT/zlib"
+	rm -rf "$ZLIB_BUILD_DIR"
+	cmake -S "$ROOT_DIR/thirdparty/zlib" -B "$ZLIB_BUILD_DIR" -G "Unix Makefiles" \
+		-DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5
+	cmake --build "$ZLIB_BUILD_DIR" --parallel "$JOBS" --target zlibstatic
+	OUT="$(find "$ZLIB_BUILD_DIR" -maxdepth 2 -name 'libz.a' -print -quit)"
+	if [ -z "$OUT" ]; then
+		echo "error: expected to produce libz.a in $ZLIB_BUILD_DIR, but didn't find it" >&2
+		exit 1
+	fi
 	cp "$OUT" "$LIBDIR/libz.a"
 fi
 
