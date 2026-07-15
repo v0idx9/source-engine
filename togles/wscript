@@ -20,22 +20,30 @@ def build(bld):
 	source = [
 		'linuxwin/dx9asmtogl2.cpp',
 		'linuxwin/dxabstract.cpp',
-		'linuxwin/glentrypoints.cpp',	
-		'linuxwin/glmgr.cpp',			
-		'linuxwin/glmgrbasics.cpp',	
+		'linuxwin/glentrypoints.cpp',
+		'linuxwin/glmgr.cpp',
+		'linuxwin/glmgrbasics.cpp',
 		#'linuxwin/intelglmallocworkaround.cpp',		[$OSXALL]
 		#'linuxwin/mach_override.c',					[$OSXALL]
-		'linuxwin/cglmtex.cpp',		
-		'linuxwin/cglmfbo.cpp',		
-		'linuxwin/cglmprogram.cpp',	
-		'linuxwin/cglmbuffer.cpp',	
+		'linuxwin/cglmtex.cpp',
+		'linuxwin/cglmfbo.cpp',
+		'linuxwin/cglmprogram.cpp',
+		'linuxwin/cglmbuffer.cpp',
 		'linuxwin/cglmquery.cpp',
-		'linuxwin/asanstubs.cpp',
 		'linuxwin/decompress.c'
 	]
 
 	if bld.env.DEST_OS == "darwin" and not bld.env.IOS:
 		source += ['linuxwin/glmgrcocoa.mm']
+
+	# asanstubs.cpp provides empty-body GLMDisplayDB:: methods; on iOS the real
+	# implementations come from appframework/sdlmgr.cpp including
+	# glmdisplaydb_linuxwin.inl, so compiling both would duplicate-define the same
+	# symbols at link time. It also doesn't pull in the <GL/gl.h>/prerequisite
+	# include sequence glmdisplay.h needs on its own (unlike rendermechanism.h),
+	# which is a moot point once it's simply excluded here.
+	if not bld.env.IOS:
+		source += ['linuxwin/asanstubs.cpp']
 
 	includes = [
 		'.',
