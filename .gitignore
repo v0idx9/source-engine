@@ -39,3 +39,6 @@ waf3*/
 source-engine.sln
 Payload/
 *.ipa
+/Frameworks/
+/build-ios-deps/
+/lib/darwin/

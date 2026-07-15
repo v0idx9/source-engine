@@ -1,0 +1,125 @@
+#!/bin/bash
+# Builds the engine for iOS (device, arm64, togles+ANGLE) via waf, assembles it into
+# a .app bundle, ad-hoc codesigns it, and zips it into an unsigned .ipa.
+#
+# This only packages the ENGINE. It ships no game content (maps/materials/models are
+# Valve's copyrighted assets, not part of this repo) -- the resulting app expects the
+# user to copy their own game folders (e.g. "hl2", "portal", "platform") onto the
+# device via the Files app / Finder file sharing, matching how this engine already
+# resolves content from Documents/<mod>/ at runtime (see AppFramework's LoadModule
+# search order).
+#
+# Requires: scripts/ios/fetch-angle.sh and scripts/ios/build-deps.sh already run.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+GAME="${GAME:-hl2}"
+BUNDLE_NAME="${BUNDLE_NAME:-SourceEngine}"
+BUNDLE_ID="${BUNDLE_ID:-com.v0idx9.sourceengine.$GAME}"
+BUILD_VARIANT="${BUILD_VARIANT:-release}"
+
+FRAMEWORKS_DIR="$ROOT_DIR/Frameworks"
+SDK_ROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+SDK_FRAMEWORKS_DIR="$SDK_ROOT/System/Library/Frameworks"
+
+echo "=== Sanity checks ==="
+for f in "$FRAMEWORKS_DIR/SDL2.framework/SDL2" "$FRAMEWORKS_DIR/libEGL.framework/libEGL" "$FRAMEWORKS_DIR/libGLESv2.framework/libGLESv2" "$ROOT_DIR/lib/darwin/aarch64/libz.a"; do
+	if [ ! -e "$f" ]; then
+		echo "error: missing $f -- run fetch-angle.sh and build-deps.sh first" >&2
+		exit 1
+	fi
+done
+
+# wscript has no CLI option to point ANGLE at a custom framework search path (unlike
+# SDL2, which has --sdl2=<path>), so the only way to make clang's default -isysroot
+# framework search find libEGL/libGLESv2 is to place them where it already looks:
+# inside the SDK bundle. This only touches the ephemeral CI runner's Xcode copy.
+echo "=== Installing ANGLE frameworks into SDK ($SDK_FRAMEWORKS_DIR) ==="
+sudo cp -R "$FRAMEWORKS_DIR/libEGL.framework" "$SDK_FRAMEWORKS_DIR/"
+sudo cp -R "$FRAMEWORKS_DIR/libGLESv2.framework" "$SDK_FRAMEWORKS_DIR/"
+
+PAYLOAD_DIR="$ROOT_DIR/Payload"
+APP_DIR="$PAYLOAD_DIR/$BUNDLE_NAME.app"
+rm -rf "$PAYLOAD_DIR"
+mkdir -p "$APP_DIR"
+
+echo "=== Configuring waf (game=$GAME) ==="
+cd "$ROOT_DIR"
+./waf configure -T "$BUILD_VARIANT" \
+	--ios --togles --angle \
+	--sdl2="$FRAMEWORKS_DIR/SDL2.framework" \
+	--build-games="$GAME" \
+	--prefix="$APP_DIR"
+
+echo "=== Building ==="
+./waf build
+
+echo "=== Installing build outputs into $APP_DIR ==="
+./waf install
+
+if [ ! -f "$APP_DIR/hl2_launcher" ]; then
+	echo "error: waf install did not produce $APP_DIR/hl2_launcher" >&2
+	echo "contents of $APP_DIR:" >&2
+	ls -la "$APP_DIR" >&2
+	exit 1
+fi
+
+echo "=== Writing Info.plist ==="
+sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/g" -e "s/__BUNDLE_NAME__/$BUNDLE_NAME/g" \
+	"$ROOT_DIR/launcher_main/ios/Info.plist" > "$APP_DIR/Info.plist"
+
+echo "=== Embedding frameworks ==="
+mkdir -p "$APP_DIR/Frameworks"
+cp -R "$FRAMEWORKS_DIR/SDL2.framework" "$APP_DIR/Frameworks/"
+cp -R "$FRAMEWORKS_DIR/libEGL.framework" "$APP_DIR/Frameworks/"
+cp -R "$FRAMEWORKS_DIR/libGLESv2.framework" "$APP_DIR/Frameworks/"
+
+# ANGLE loads its GLES/EGL backends as further dylibs beside libGLESv2/libEGL in the
+# same release archive on some ANGLE builds; harmless no-op if there are none.
+shopt -s nullglob
+for extra in "$FRAMEWORKS_DIR"/*.framework; do
+	base="$(basename "$extra")"
+	if [ ! -d "$APP_DIR/Frameworks/$base" ]; then
+		cp -R "$extra" "$APP_DIR/Frameworks/"
+	fi
+done
+shopt -u nullglob
+
+echo "=== Fixing up rpaths so the dynamic linker can find embedded frameworks ==="
+# Every binary in the flat bundle root can potentially be the one that links
+# SDL2/libEGL/libGLESv2 directly (materialsystem/shaderapi, not necessarily the
+# launcher). @executable_path always resolves to the main executable's directory
+# even when patching a dylib, and every binary here lives in that same directory,
+# so this is safe to apply broadly rather than guessing which one links what.
+for bin in "$APP_DIR/hl2_launcher" "$APP_DIR"/*.dylib; do
+	[ -f "$bin" ] || continue
+	if otool -L "$bin" 2>/dev/null | grep -qE "SDL2\.framework|libEGL\.framework|libGLESv2\.framework"; then
+		install_name_tool -add_rpath "@executable_path/Frameworks" "$bin" 2>/dev/null || true
+	fi
+done
+
+echo "=== Ad-hoc codesigning (unsigned/local signature; re-sign with AltStore, Sideloadly, or Xcode before installing) ==="
+ENTITLEMENTS="$ROOT_DIR/launcher_main/ios/entitlements-adhoc.plist"
+
+codesign --force --sign - --timestamp=none "$APP_DIR/Frameworks/SDL2.framework/SDL2"
+codesign --force --sign - --timestamp=none "$APP_DIR/Frameworks/libEGL.framework/libEGL"
+codesign --force --sign - --timestamp=none "$APP_DIR/Frameworks/libGLESv2.framework/libGLESv2"
+
+for dylib in "$APP_DIR"/*.dylib; do
+	[ -f "$dylib" ] || continue
+	codesign --force --sign - --timestamp=none "$dylib"
+done
+
+codesign --force --sign - --timestamp=none --entitlements "$ENTITLEMENTS" "$APP_DIR/hl2_launcher"
+codesign --force --sign - --timestamp=none --entitlements "$ENTITLEMENTS" "$APP_DIR"
+
+echo "=== Verifying signature ==="
+codesign --verify --deep --strict "$APP_DIR"
+
+echo "=== Zipping IPA ==="
+IPA_PATH="$ROOT_DIR/$BUNDLE_NAME-$GAME.ipa"
+rm -f "$IPA_PATH"
+cd "$ROOT_DIR"
+zip -qr "$IPA_PATH" "$(basename "$PAYLOAD_DIR")"
+
+echo "=== Done: $IPA_PATH ==="

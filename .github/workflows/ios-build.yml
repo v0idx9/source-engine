@@ -1,0 +1,72 @@
+name: iOS IPA (unsigned)
+
+# Manual trigger only. This is a heavy, multi-stage macOS build (cross-compiling
+# zlib/libpng/libjpeg/freetype/curl/SDL2 for iOS device plus the engine itself), and
+# macOS runner minutes are expensive -- unlike the desktop targets in build.yml, this
+# should not run on every push/PR.
+on:
+  workflow_dispatch:
+    inputs:
+      game:
+        description: "Which game's client/server to build (content itself is not included; you must supply your own game files)"
+        required: true
+        default: hl2
+        type: choice
+        options:
+          - hl2
+          - portal
+          - hl2mp
+          - episodic
+      bundle_id:
+        description: "iOS bundle identifier for the packaged app"
+        required: true
+        default: com.v0idx9.sourceengine
+
+jobs:
+  build-ios-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Make iOS scripts executable
+        run: chmod +x scripts/ios/*.sh waf
+
+      - name: Cache iOS thirdparty deps + ANGLE
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/darwin/aarch64
+            Frameworks
+            thirdparty/angle
+            build-ios-deps
+          key: ios-deps-${{ runner.os }}-${{ hashFiles('scripts/ios/build-deps.sh', 'scripts/ios/fetch-angle.sh', 'scripts/ios/ios.toolchain.cmake') }}-${{ hashFiles('.gitmodules') }}
+
+      - name: Fetch prebuilt ANGLE
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: scripts/ios/fetch-angle.sh
+
+      - name: Build thirdparty deps (zlib, libpng, libjpeg, freetype, curl, SDL2)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: scripts/ios/build-deps.sh
+
+      - name: Build engine and package IPA
+        env:
+          GAME: ${{ inputs.game }}
+          BUNDLE_NAME: SourceEngine
+          BUNDLE_ID: ${{ inputs.bundle_id }}.${{ inputs.game }}
+        run: scripts/ios/package-ipa.sh
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SourceEngine-${{ inputs.game }}-unsigned-ipa
+          path: "*.ipa"
+          if-no-files-found: error
+          retention-days: 14
