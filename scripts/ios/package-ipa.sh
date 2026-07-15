@@ -65,6 +65,28 @@ if [ -d "$ROOT_DIR/ivp" ]; then
 			sed -i '' -E 's/^#([[:space:]]*)ifdef OSX[[:space:]]*$/#\1if defined(OSX) || defined(IOS)/' "$f"
 		fi
 	done
+
+	# Same underlying issue, different header: several ivp files only include
+	# <alloca.h> under "#if defined(LINUX) || defined(SUN) || (__MWERKS__ && ...)",
+	# never checking for any Apple platform, so alloca() is undeclared on iOS. Unlike
+	# the malloc.h fix above, the exact condition line's formatting is wildly
+	# inconsistent across these files (tabs vs spaces, defined(__MWERKS__) vs bare
+	# __MWERKS__, spaced vs unspaced ||), so rewriting that line reliably with a
+	# single regex isn't practical. Prepend #include <stdlib.h> instead of a
+	# standalone <alloca.h> -- stdlib.h is a standard header guaranteed to exist
+	# everywhere (unlike malloc.h/alloca.h, which are platform-specific and where
+	# assuming either exists on iOS without checking is exactly the mistake this
+	# whole ivp patching keeps correcting), and Darwin's stdlib.h declares alloca()
+	# as a BSD extension. This patch is transient/CI-only, never committed.
+	IVP_ALLOCA_FILES="$(grep -rl 'include <alloca.h>' "$ROOT_DIR/ivp" 2>/dev/null || true)"
+	for f in $IVP_ALLOCA_FILES; do
+		if ! head -1 "$f" | grep -q '#include <stdlib.h>'; then
+			echo "=== Patching $f: unconditionally provide <stdlib.h> for alloca() (undeclared on iOS otherwise) ===" >&2
+			TMP_ALLOCA="$(mktemp)"
+			{ echo '#include <stdlib.h> /* patched by scripts/ios/package-ipa.sh, see comment there: alloca() for iOS */'; cat "$f"; } > "$TMP_ALLOCA"
+			mv "$TMP_ALLOCA" "$f"
+		fi
+	done
 fi
 
 echo "=== Configuring waf (game=$GAME) ==="
