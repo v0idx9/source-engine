@@ -252,9 +252,14 @@ PLIST
 
 	# waf's scripts/waifulib/sdl2.py --sdl2=<path> option (used by package-ipa.sh)
 	# requires a real "<path>/Headers" directory with SDL's public headers, and adds
-	# it directly as an include dir (code does #include "SDL.h", not <SDL2/SDL.h>).
-	mkdir -p "$FW/Headers"
+	# it directly as an include dir. Most of the codebase does #include "SDL.h"
+	# (flat), but the IOS-specific blocks in appframework/sdlmgr.cpp,
+	# launcher_main/main.cpp, and dedicated_main/main.cpp use the namespaced
+	# #include "SDL2/SDL_rect.h" style instead, so both layouts need to exist under
+	# the same Headers dir.
+	mkdir -p "$FW/Headers" "$FW/Headers/SDL2"
 	cp "$ROOT_DIR"/thirdparty/SDL-src/include/*.h "$FW/Headers/"
+	cp "$ROOT_DIR"/thirdparty/SDL-src/include/*.h "$FW/Headers/SDL2/"
 fi
 
 echo "=== SDL2.framework installed to $FRAMEWORKS_DIR/SDL2.framework ==="

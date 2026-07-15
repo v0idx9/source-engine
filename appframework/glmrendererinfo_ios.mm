@@ -599,7 +599,7 @@ GLMDisplayInfo::GLMDisplayInfo( CGDirectDisplayID displayID, CGOpenGLDisplayMask
         
         if ( pWindow )
         {
-            SDL_GetWindowSizeInPixels( pWindow, &rw, &rh );
+            SDL_GL_GetDrawableSize( pWindow, &rw, &rh );
             m_info.m_displayPixelWidth  = rw;
             m_info.m_displayPixelHeight = rh;
         }
@@ -674,7 +674,7 @@ void GLMDisplayInfo::PopulateModes( void )
     
     int rw, rh;
 	SDL_DisplayMode mode;
-    SDL_GetWindowSizeInPixels(SDL_GetWindowFromID(1), &rw, &rh);
+    SDL_GL_GetDrawableSize(SDL_GetWindowFromID(1), &rw, &rh);
 	SDL_GetCurrentDisplayMode(0, &mode);
 	//SDL_GetWindowSize(SDL_GetWindowFromID(1), &w, &h);
 	float scale = (float)rw / mode.w;

@@ -2309,7 +2309,7 @@ void CSDLMgr::DisplayedSize( uint &width, uint &height )
 	SDLAPP_FUNC;
 
 	int w, h;
-	SDL_GetWindowSizeInPixels(m_Window, &w, &h);
+	SDL_GL_GetDrawableSize(m_Window, &w, &h);
 	width = (uint) w;
 	height = (uint) h;
 }
