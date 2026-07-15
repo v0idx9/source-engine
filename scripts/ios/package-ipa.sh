@@ -51,7 +51,11 @@ mkdir -p "$APP_DIR"
 # every occurrence of this exact pattern transiently, same as the thirdparty patches
 # in build-deps.sh. All 4 known instances share the identical structure.
 if [ -d "$ROOT_DIR/ivp" ]; then
-	IVP_MALLOC_FILES="$(grep -rl '^#ifdef OSX$' "$ROOT_DIR/ivp" --include='*.cxx' --include='*.hxx' 2>/dev/null || true)"
+	# Multiple --include patterns on macOS's BSD grep only reliably honored one of
+	# them in practice (missed ivu_types.hxx -- the actual file causing the build
+	# failure -- while matching .cxx files fine), so just grep everything under ivp/
+	# instead of trying to filter by extension.
+	IVP_MALLOC_FILES="$(grep -rl '^#ifdef OSX$' "$ROOT_DIR/ivp" 2>/dev/null || true)"
 	for f in $IVP_MALLOC_FILES; do
 		if grep -A1 '^#ifdef OSX$' "$f" | grep -q 'include <malloc/malloc.h>'; then
 			echo "=== Patching $f: also use <malloc/malloc.h> on iOS (not just OSX) ===" >&2
