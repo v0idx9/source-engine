@@ -88,6 +88,19 @@ if [ ! -f "$LIBDIR/libz.a" ]; then
 	cp "$OUT" "$LIBDIR/libz.a"
 fi
 
+# This vendored libpng predates iOS: pngpriv.h treats any TARGET_OS_MAC build (true
+# on modern iOS too, via TargetConditionals.h -- not just classic Mac OS) as wanting
+# the decades-extinct classic-MacOS <fp.h> header instead of <math.h>, which no
+# longer exists on any current Apple SDK ("fatal error: 'fp.h' file not found").
+# Drop TARGET_OS_MAC from that check so only genuinely archaic compilers
+# (__MWERKS__/applec/THINK_C/__SC__, none of which are ever true here) can still hit
+# the <fp.h> branch, and modern Apple builds always take the <math.h> path.
+PNGPRIV_H="$ROOT_DIR/thirdparty/libpng/pngpriv.h"
+if [ -f "$PNGPRIV_H" ] && grep -q 'defined(TARGET_OS_MAC)' "$PNGPRIV_H"; then
+	echo "=== Patching pngpriv.h: don't route modern Apple builds through <fp.h> ==="
+	sed -i '' 's/defined(THINK_C) || defined(__SC__) || defined(TARGET_OS_MAC)/defined(THINK_C) || defined(__SC__)/' "$PNGPRIV_H"
+fi
+
 # --- libpng (needs zlib) ---
 if [ ! -f "$LIBDIR/libpng.a" ]; then
 	ZLIB_H_DIR="$ROOT_DIR/thirdparty/zlib"
