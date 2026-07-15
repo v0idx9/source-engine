@@ -43,6 +43,23 @@ APP_DIR="$PAYLOAD_DIR/$BUNDLE_NAME.app"
 rm -rf "$PAYLOAD_DIR"
 mkdir -p "$APP_DIR"
 
+# The ivp (physics) submodule predates this iOS port and only ever checks
+# "#ifdef OSX" (this codebase's macOS-only define; wscript sets IOS/_IOS instead of
+# OSX/_OSX for iOS builds) to pick <malloc/malloc.h> vs Linux's <malloc.h>, which
+# doesn't exist on iOS either ("fatal error: 'malloc.h' file not found"). It's a
+# separate repo (nillerusr/source-physics) we can't push a fix to directly, so patch
+# every occurrence of this exact pattern transiently, same as the thirdparty patches
+# in build-deps.sh. All 4 known instances share the identical structure.
+if [ -d "$ROOT_DIR/ivp" ]; then
+	IVP_MALLOC_FILES="$(grep -rl '^#ifdef OSX$' "$ROOT_DIR/ivp" --include='*.cxx' --include='*.hxx' 2>/dev/null || true)"
+	for f in $IVP_MALLOC_FILES; do
+		if grep -A1 '^#ifdef OSX$' "$f" | grep -q 'include <malloc/malloc.h>'; then
+			echo "=== Patching $f: also use <malloc/malloc.h> on iOS (not just OSX) ===" >&2
+			sed -i '' 's/^#ifdef OSX$/#if defined(OSX) || defined(IOS)/' "$f"
+		fi
+	done
+fi
+
 echo "=== Configuring waf (game=$GAME) ==="
 cd "$ROOT_DIR"
 ./waf configure -T "$BUILD_VARIANT" \
