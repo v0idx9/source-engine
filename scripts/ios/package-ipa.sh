@@ -110,6 +110,53 @@ if [ ! -f "$APP_DIR/hl2_launcher" ]; then
 	exit 1
 fi
 
+echo "=== Fixing up internal dylib-to-dylib install names ==="
+# This wscript never loads waf's c_osx tool (which normally auto-generates relocatable
+# @rpath install names for shared libraries on Apple platforms), so every dylib waf
+# links here keeps clang's raw default: its own absolute build-directory path baked
+# into its own ID, and every OTHER dylib that links against it captures that same
+# absolute path verbatim. That's fine on the CI runner where the path briefly exists,
+# but it can never resolve on an actual device. Confirmed via a real device's
+# boot_diag.log: liblauncher.dylib failed to dlopen with
+# "Library not loaded: /Users/runner/work/source-engine/source-engine/build/togles/libtogl.dylib".
+# liblauncher->libtogl is just the one that happened to be discovered first (loading
+# order stops there) -- every other dylib-to-dylib link in this ~30-dylib flat bundle
+# is equally likely to have the exact same problem, just not yet reached, so fix all
+# of them in one generic pass rather than one at a time as each surfaces.
+#
+# All these dylibs (and the main executable) sit flat in the same directory
+# ($APP_DIR, since PREFIX=BINDIR=LIBDIR=$APP_DIR for iOS), so @loader_path -- "next to
+# whichever binary is doing the loading" -- resolves correctly for every single one of
+# them uniformly, regardless of which dylib depends on which or how deep the chain is.
+
+# Give every dylib a clean, relocatable self-identity first.
+for dylib in "$APP_DIR"/*.dylib; do
+	[ -f "$dylib" ] || continue
+	install_name_tool -id "@rpath/$(basename "$dylib")" "$dylib"
+done
+
+# Then rewrite every binary's references to any of THOSE dylibs, wherever the
+# reference doesn't already look relocatable, and make sure @loader_path is in that
+# binary's own rpath list so @rpath/... actually resolves.
+for bin in "$APP_DIR/hl2_launcher" "$APP_DIR"/*.dylib; do
+	[ -f "$bin" ] || continue
+	needs_rpath=0
+	while IFS= read -r dep_line; do
+		dep_path="$(echo "$dep_line" | awk '{print $1}')"
+		[ -z "$dep_path" ] && continue
+		case "$dep_path" in
+			@rpath/*|@executable_path/*|@loader_path/*) continue ;;
+		esac
+		dep_base="$(basename "$dep_path")"
+		[ -f "$APP_DIR/$dep_base" ] || continue
+		install_name_tool -change "$dep_path" "@rpath/$dep_base" "$bin"
+		needs_rpath=1
+	done < <(otool -L "$bin" 2>/dev/null | tail -n +2)
+	if [ "$needs_rpath" = "1" ]; then
+		install_name_tool -add_rpath "@loader_path" "$bin" 2>/dev/null || true
+	fi
+done
+
 echo "=== Writing Info.plist ==="
 sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/g" -e "s/__BUNDLE_NAME__/$BUNDLE_NAME/g" \
 	"$ROOT_DIR/launcher_main/ios/Info.plist" > "$APP_DIR/Info.plist"
