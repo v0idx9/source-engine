@@ -42,7 +42,15 @@ cmake_build_static() {
 	fi
 	cmake --install "$build_dir"
 	local found
-	found="$(find "$build_dir/install" "$build_dir" -maxdepth 3 -name "$out_lib_name" -print -quit)"
+	# Search the install prefix first, then fall back to the raw build dir. Some of
+	# these libraries install both a versioned and unversioned name for the same lib
+	# (e.g. libpng16.a and libpng.a) which can match a glob like "libpng*.a" more than
+	# once; take just the first hit via `head -1` rather than relying on `find -quit`
+	# to stop at exactly one result across multiple search roots.
+	found="$(find "$build_dir/install" -maxdepth 4 -name "$out_lib_name" 2>/dev/null | head -1)"
+	if [ -z "$found" ]; then
+		found="$(find "$build_dir" -maxdepth 3 -name "$out_lib_name" 2>/dev/null | head -1)"
+	fi
 	if [ -z "$found" ]; then
 		echo "error: expected to produce $out_lib_name in $build_dir, but didn't find it" >&2
 		exit 1
@@ -170,7 +178,7 @@ if [ ! -d "$FRAMEWORKS_DIR/SDL2.framework" ]; then
 		-DSDL_LOADSO=ON -DSDL_CPUINFO=ON -DSDL_FILESYSTEM=ON -DSDL_SENSOR=ON \
 		-DSDL_LIBSAMPLERATE=OFF
 	cmake --build "$SDL_BUILD_DIR" --parallel "$JOBS"
-	SDL_STATIC_LIB="$(find "$SDL_BUILD_DIR" -maxdepth 2 -name 'libSDL2.a' -print -quit)"
+	SDL_STATIC_LIB="$(find "$SDL_BUILD_DIR" -maxdepth 3 -name 'libSDL2.a' 2>/dev/null | head -1)"
 	if [ -z "$SDL_STATIC_LIB" ]; then
 		echo "error: SDL2 build did not produce libSDL2.a" >&2
 		exit 1
