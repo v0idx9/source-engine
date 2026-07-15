@@ -17,13 +17,14 @@
 
 #if defined( DX_TO_GL_ABSTRACTION )
 
-#ifdef TOGLES
-#include "togles/linuxwin/glmgrbasics.h"
-#include "togles/linuxwin/glmdisplay.h"
-#else
-#include "togl/linuxwin/glmgrbasics.h"
-#include "togl/linuxwin/glmdisplay.h"
-#endif
+// Pulling in glmgrbasics.h/glmdisplay.h directly (as this used to do, unconditionally
+// assuming the togl/ desktop-GL variant) skips the <GL/gl.h> + prerequisite header
+// sequence that togl/rendermechanism.h provides before those headers -- without it,
+// GLuint/GLenum/GL_BYTE/etc are never declared. Every other place in the codebase
+// that needs these types goes through that single self-redirecting (TOGLES-aware)
+// entry point instead of reaching into togl(es)/linuxwin/* headers directly; do the
+// same here rather than re-deriving the include order by hand.
+#include "togl/rendermechanism.h"
 
 class GLMDisplayDB;
 class CShowPixelsParams;
