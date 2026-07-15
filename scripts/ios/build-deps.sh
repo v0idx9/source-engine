@@ -33,6 +33,7 @@ cmake_build_static() {
 		-DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX="$build_dir/install" \
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 		"$@"
 	cmake --build "$build_dir" --parallel "$JOBS"
 	cmake --install "$build_dir"
@@ -98,6 +99,7 @@ if [ ! -d "$FRAMEWORKS_DIR/SDL2.framework" ]; then
 	cmake -S "$ROOT_DIR/thirdparty/SDL-src" -B "$SDL_BUILD_DIR" -G "Unix Makefiles" \
 		-DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
 		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 		-DSDL_STATIC=ON -DSDL_SHARED=OFF \
 		-DSDL_AUDIO=ON -DSDL_VIDEO=ON -DSDL_RENDER=ON -DSDL_JOYSTICK=ON \
 		-DSDL_HAPTIC=ON -DSDL_ATOMIC=ON -DSDL_THREADS=ON -DSDL_FILE=ON \
