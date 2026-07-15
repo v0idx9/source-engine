@@ -58,6 +58,40 @@
 #include "tier1/fmtstr.h"
 #include "sourcevr/isourcevirtualreality.h"
 
+#if IOS
+// Continues the boot_diag.log trail started in launcher_main/main.cpp's BootDiag()
+// (that one confirmed LauncherMain() itself does get called, but nothing recorded
+// after that -- the failure is somewhere in here or deeper). This is a *separate*
+// dylib (liblauncher.dylib) from the main executable that defines IOS_GetDocsDir()
+// (Launchdiag.m, compiled into hl2_launcher), so rather than depend on uncertain
+// cross-binary symbol resolution, re-derive the same Documents path independently
+// via $HOME (set by iOS for every process to its sandbox container root; Documents
+// is always $HOME/Documents there), which needs no Objective-C/Foundation calls.
+#include <stdarg.h>
+static FILE *g_bootDiagFile2 = NULL;
+static void BootDiag2( const char *fmt, ... )
+{
+	if ( !g_bootDiagFile2 )
+	{
+		const char *home = getenv( "HOME" );
+		char path[1024];
+		snprintf( path, sizeof(path), "%s/Documents/boot_diag.log", home ? home : "." );
+		g_bootDiagFile2 = fopen( path, "a" );
+		if ( !g_bootDiagFile2 )
+			return;
+	}
+	va_list args;
+	va_start( args, fmt );
+	vfprintf( g_bootDiagFile2, fmt, args );
+	va_end( args );
+	fputc( '\n', g_bootDiagFile2 );
+	fflush( g_bootDiagFile2 );
+}
+#define BOOTDIAG2(...) BootDiag2(__VA_ARGS__)
+#else
+#define BOOTDIAG2(...)
+#endif
+
 #define VERSION_SAFE_STEAM_API_INTERFACES
 #include "steam/steam_api.h"
 
@@ -654,6 +688,7 @@ void ReportDirtyDiskNoMaterialSystem()
 //-----------------------------------------------------------------------------
 bool CSourceAppSystemGroup::Create()
 {
+	BOOTDIAG2( "CSourceAppSystemGroup::Create() entered" );
 	IFileSystem *pFileSystem = (IFileSystem*)FindSystem( FILESYSTEM_INTERFACE_VERSION );
 	pFileSystem->InstallDirtyDiskReportFunc( ReportDirtyDiskNoMaterialSystem );
 
@@ -687,11 +722,18 @@ bool CSourceAppSystemGroup::Create()
 	};
 
 #if defined( USE_SDL )
+	BOOTDIAG2( "About to call CreateSDLMgr()" );
 	AddSystem( (IAppSystem *)CreateSDLMgr(), SDLMGR_INTERFACE_VERSION );
+	BOOTDIAG2( "CreateSDLMgr()/AddSystem() returned" );
 #endif
 
-	if ( !AddSystems( appSystems ) ) 
+	BOOTDIAG2( "About to call AddSystems() -- loads engine/inputsystem/materialsystem/datacache/studiorender/vphysics/video_services/vguimatsurface/vgui2 dylibs" );
+	if ( !AddSystems( appSystems ) )
+	{
+		BOOTDIAG2( "AddSystems() returned false" );
 		return false;
+	}
+	BOOTDIAG2( "AddSystems() returned true" );
 	
 	// This will be NULL for games that don't support VR. That's ok. Just don't load the DLL
 	AppModule_t sourceVRModule = LoadModule( "sourcevr" DLL_EXT_STRING );
@@ -758,20 +800,25 @@ bool CSourceAppSystemGroup::Create()
 		pDLLName = "shaderapiempty" DLL_EXT_STRING;
 	}
 
+	BOOTDIAG2( "About to call pMaterialSystem->SetShaderAPI(\"%s\") -- this is what actually loads shaderapidx9.dylib and can trigger GL/EGL context creation", pDLLName );
 	pMaterialSystem->SetShaderAPI( pDLLName );
+	BOOTDIAG2( "SetShaderAPI() returned" );
 
 	double elapsed = Plat_FloatTime() - st;
 	COM_TimestampedLog( "LoadAppSystems:  Took %.4f secs to load libraries and get factories.", (float)elapsed );
 
+	BOOTDIAG2( "CSourceAppSystemGroup::Create() about to return true" );
 	return true;
 }
 
 bool CSourceAppSystemGroup::PreInit()
 {
+	BOOTDIAG2( "CSourceAppSystemGroup::PreInit() entered" );
 	if ( !CommandLine()->FindParm( "-nolog" ) )
 		DebugLogger()->Init("engine.log");
 	else
 		DebugLogger()->Disable();
+	BOOTDIAG2( "DebugLogger initialized (or disabled) -- engine.log should exist by now if -nolog wasn't passed" );
 
 	CreateInterfaceFn factory = GetFactory();
 	ConnectTier1Libraries( &factory, 1 );
@@ -1206,6 +1253,7 @@ DLL_EXPORT int LauncherMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR
 DLL_EXPORT int LauncherMain( int argc, char **argv )
 #endif
 {
+	BOOTDIAG2( "LauncherMain() entered (liblauncher.dylib)" );
 #if (defined(LINUX) || defined(PLATFORM_BSD)) && !defined ANDROID
 	// Temporary fix to stop us from crashing in printf/sscanf functions that don't expect
 	//  localization to mess with your "." and "," float seperators. Mac OSX also sets LANG
@@ -1493,7 +1541,9 @@ DLL_EXPORT int LauncherMain( int argc, char **argv )
 
 		CSourceAppSystemGroup sourceSystems;
 		CSteamApplication steamApplication( &sourceSystems );
+		BOOTDIAG2( "About to call steamApplication.Run()" );
 		int nRetval = steamApplication.Run();
+		BOOTDIAG2( "steamApplication.Run() returned %d", nRetval );
 		if ( steamApplication.GetErrorStage() == CSourceAppSystemGroup::INITIALIZATION )
 		{
 			bRestart = (nRetval == INIT_RESTART);
