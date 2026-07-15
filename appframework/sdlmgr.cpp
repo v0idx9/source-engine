@@ -1397,7 +1397,21 @@ void CSDLMgr::OnFrameRendered()
 void CSDLMgr::ShowPixels( CShowPixelsParams *params )
 {
 	SDLAPP_FUNC;
-	
+
+	// DIAG: this is the actual per-frame "present" call (SDL_GL_SwapWindow lives
+	// further down in this same function). A black screen with no crash and no hang
+	// indication elsewhere in the boot sequence is consistent with the engine
+	// reaching its normal running state and calling this every frame, just not
+	// having drawn anything visible before the swap -- which would look identical
+	// to a hang from the user's side even though nothing is actually stuck. Log only
+	// the first few calls so this doesn't flood engine.log at 60fps.
+	static int s_nDiagShowPixelsCount = 0;
+	if ( s_nDiagShowPixelsCount < 5 )
+	{
+		s_nDiagShowPixelsCount++;
+		Msg( "DIAG: ShowPixels() call #%d entered, onlySyncView=%d\n", s_nDiagShowPixelsCount, (int)params->m_onlySyncView );
+	}
+
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, __FUNCTION__ );
 
 	if (params->m_onlySyncView)
@@ -1644,7 +1658,11 @@ void CSDLMgr::ShowPixels( CShowPixelsParams *params )
 	CFastTimer tm;
 	tm.Start();
 
+	if ( s_nDiagShowPixelsCount <= 5 )
+		Msg( "DIAG: ShowPixels() call #%d about to call SDL_GL_SwapWindow (the real per-frame present)\n", s_nDiagShowPixelsCount );
 	SDL_GL_SwapWindow( m_Window );
+	if ( s_nDiagShowPixelsCount <= 5 )
+		Msg( "DIAG: ShowPixels() call #%d SDL_GL_SwapWindow returned\n", s_nDiagShowPixelsCount );
 
 	m_flPrevGLSwapWindowTime = tm.GetDurationInProgress().GetMillisecondsF();
 
