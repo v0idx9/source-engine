@@ -177,6 +177,20 @@ ls -la "$LIBDIR"
 FRAMEWORKS_DIR="$ROOT_DIR/Frameworks"
 mkdir -p "$FRAMEWORKS_DIR"
 if [ ! -d "$FRAMEWORKS_DIR/SDL2.framework" ]; then
+	# SDL's CMakeLists.txt unconditionally probes for -Wdeclaration-after-statement
+	# support and, if found, escalates it to -Werror=declaration-after-statement for
+	# the whole build (no CMake option to opt out). At least one bundled source file
+	# (SDL_rwopsbundlesupport.m) violates that under this SDK/toolchain. SDL2 is a
+	# large codebase, so rather than fixing files one at a time as each surfaces from
+	# a slow CI iteration, just stop the flag from ever being added -- fully
+	# neutralizes the whole warning-as-error class regardless of later compiler flag
+	# precedence, which patching CFLAGS to override it wouldn't reliably guarantee.
+	SDL_CMAKELISTS="$ROOT_DIR/thirdparty/SDL-src/CMakeLists.txt"
+	if grep -q 'declaration-after-statement' "$SDL_CMAKELISTS"; then
+		echo "=== Patching SDL CMakeLists.txt: don't escalate -Wdeclaration-after-statement to -Werror ===" >&2
+		sed -i '' '/declaration-after-statement/d' "$SDL_CMAKELISTS"
+	fi
+
 	echo "=== Building SDL2 (static lib, then wrapped into a framework) ==="
 	SDL_BUILD_DIR="$BUILD_ROOT/sdl2"
 	rm -rf "$SDL_BUILD_DIR"
