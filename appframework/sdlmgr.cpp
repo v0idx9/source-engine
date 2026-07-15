@@ -885,6 +885,20 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
 		Error( "Failed to create SDL window: %s", SDL_GetError() );
 	SetAssertDialogParent( m_Window );
 
+#ifdef IOS
+	// The SDL_WINDOW_HIDDEN flag + deferred SDL_ShowWindow dance exists so desktop
+	// players never see a wrongly-sized window flash before the real video mode is
+	// set: CreateGameWindow(0x0) intentionally skips showing and defers to
+	// SizeWindow()... which never runs on iOS, because the "window" is always
+	// exactly the fixed-size screen and no resize ever happens. Net effect
+	// (confirmed on-device: engine boots fully, render loop presents at 60fps via
+	// eglSwapBuffers into this window's CAMetalLayer, screen stays permanently
+	// black): every frame goes to a hidden window. There is no wrong-size state to
+	// protect the user from on iOS, so just show the window as soon as it exists.
+	Msg( "DIAG: iOS: showing window immediately (no deferred-show on a fixed-size screen)\n" );
+	SDL_ShowWindow( m_Window );
+#endif
+
 #ifdef OSX
 
 	GLMRendererInfoFields rendererInfo;
