@@ -104,16 +104,26 @@ fi
 # --- libpng (needs zlib) ---
 if [ ! -f "$LIBDIR/libpng.a" ]; then
 	ZLIB_H_DIR="$ROOT_DIR/thirdparty/zlib"
+	# PNG_ARM_NEON defaults to "check", which needs a PNG_ARM_NEON_FILE providing a
+	# runtime CPU-feature probe that isn't set up for iOS cross-compiles here
+	# ("PNG_ARM_NEON_FILE undefined: no support for run-time ARM NEON checks").
+	# Cross-compiling straight to arm64 makes the whole runtime-check moot anyway;
+	# just disable the NEON fast path (minor PNG-decode perf cost, not correctness).
 	OUT="$(cmake_build_static "$ROOT_DIR/thirdparty/libpng" libpng "libpng*.a" \
 		-DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF \
+		-DPNG_ARM_NEON=off \
 		-DZLIB_INCLUDE_DIR="$ZLIB_H_DIR" -DZLIB_LIBRARY="$LIBDIR/libz.a")"
 	cp "$OUT" "$LIBDIR/libpng.a"
 fi
 
-# --- libjpeg-turbo ---
+# --- libjpeg ---
+# This is not libjpeg-turbo -- it's classic IJG libjpeg wrapped in a LuaDist
+# CMakeLists.txt (only cjpeg/djpeg/jconfig.h.cmake etc, no SIMD/turbojpeg files), so
+# it uses that wrapper's own option names (BUILD_STATIC/BUILD_EXECUTABLES/BUILD_TESTS),
+# not libjpeg-turbo's (ENABLE_STATIC/WITH_SIMD/...), which would have silently no-op'd.
 if [ ! -f "$LIBDIR/libjpeg.a" ]; then
 	OUT="$(cmake_build_static "$ROOT_DIR/thirdparty/libjpeg" libjpeg libjpeg.a \
-		-DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_SIMD=OFF -DWITH_TURBOJPEG=OFF)"
+		-DBUILD_STATIC=ON -DBUILD_EXECUTABLES=OFF -DBUILD_TESTS=OFF)"
 	cp "$OUT" "$LIBDIR/libjpeg.a"
 fi
 
@@ -126,11 +136,16 @@ if [ ! -f "$LIBDIR/libfreetype2.a" ]; then
 fi
 
 # --- curl (Apple Secure Transport for TLS, no OpenSSL needed) ---
+# This vendored curl is 7.79.0: the SSL-backend option is CMAKE_USE_SECTRANSP /
+# CMAKE_USE_OPENSSL (renamed to CURL_USE_* only in much later curl releases).
+# CMake silently ignores unrecognized -D cache vars instead of erroring, so getting
+# these names wrong wouldn't fail the build -- it'd just silently produce a curl
+# with no working TLS backend.
 if [ ! -f "$LIBDIR/libcurl.a" ]; then
 	OUT="$(cmake_build_static "$ROOT_DIR/thirdparty/curl" curl libcurl.a \
 		-DBUILD_SHARED_LIBS=OFF -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF \
-		-DCURL_USE_SECTRANSP=ON -DCURL_USE_OPENSSL=OFF -DCURL_DISABLE_LDAP=ON \
-		-DCURL_DISABLE_TELNET=ON -DCURL_ZLIB=ON -DZLIB_INCLUDE_DIR="$ROOT_DIR/thirdparty/zlib" \
+		-DCMAKE_USE_SECTRANSP=ON -DCMAKE_USE_OPENSSL=OFF -DCURL_DISABLE_LDAP=ON \
+		-DCURL_DISABLE_TELNET=ON -DZLIB_INCLUDE_DIR="$ROOT_DIR/thirdparty/zlib" \
 		-DZLIB_LIBRARY="$LIBDIR/libz.a" -DHTTP_ONLY=OFF)"
 	cp "$OUT" "$LIBDIR/libcurl.a"
 fi
