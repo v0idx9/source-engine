@@ -3893,7 +3893,8 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if( m_iFragDataCount || m_bGenerateSRGBWriteSuffix )
 	{
 		char buf[256];
-		snprintf(buf, sizeof buf, "out vec4 _gl_FragData[%d];\n#define gl_FragData _gl_FragData\n", m_iFragDataCount);
+		// the sRGB write suffix touches gl_FragData[0], so never declare a zero-length array
+		snprintf(buf, sizeof buf, "out vec4 _gl_FragData[%d];\n#define gl_FragData _gl_FragData\n", m_iFragDataCount ? m_iFragDataCount : 1);
 		StrcatToHeaderCode( buf );
 	}
 

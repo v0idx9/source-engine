@@ -2360,6 +2360,7 @@ static uint gPersistentBufferSize[kGLMNumBufferTypes] =
 GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 {
 	m_nNumDirtySamplers = 0;
+	m_FakeBlendEnableSRGB = false;
 
 	if( gGL->m_nDriverProvider == cGLDriverProviderARM )
 		m_bUseSamplerObjects = true;

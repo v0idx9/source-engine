@@ -1068,8 +1068,17 @@ bool CShaderDeviceMgrDx8::ComputeCapsFromD3D( HardwareCaps_t *pCaps, int nAdapte
 		//		(caps.PrimitiveMiscCaps & D3DPMISCCAPS_SEPARATEALPHABLEND) &&
 		bSupportsFloat16Textures &&
 		bSupportsFloat16RenderTargets &&
-		pCaps->m_SupportsSRGB && 
+		pCaps->m_SupportsSRGB &&
 		!IsX360();
+
+#ifdef TOGLES
+	// The HDR paths need sRGB-write control on 16bpc render targets, which GLES can't
+	// express (no GL_FRAMEBUFFER_SRGB, no sRGB 16-bit formats). Running them produces
+	// blown-out/flickering tonemapping on maps with HDR lightmaps (e.g. Portal), so
+	// force the LDR path.
+	bSupportsIntegerHDR = false;
+	bSupportsFloatHDR = false;
+#endif
 
 	pCaps->m_MaxHDRType = HDR_TYPE_NONE;
 	if ( bSupportsFloatHDR )

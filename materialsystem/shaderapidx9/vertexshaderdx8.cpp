@@ -2671,10 +2671,22 @@ bool CShaderManager::LoadAndCreateShaders( ShaderLookup_t &lookup, bool bVertexS
 		int nStaticComboIdx = pFileCache->FindCombo( lookup.m_nStaticIndex / pFileCache->m_Header.m_nDynamicCombos );
 		if ( nStaticComboIdx == -1 )
 		{
-			g_pFullFileSystem->Close( hFile );
-			lookup.m_Flags |= SHADER_FAILED_LOAD;
-			Warning( "Shader '%s' - Couldn't load combo %d of shader (dyn=%d)\n", m_ShaderSymbolTable.String( pFileCache->m_Filename ), lookup.m_nStaticIndex, pFileCache->m_Header.m_nDynamicCombos );
-			return false;
+			// The requested combo isn't in the file. This happens when the game ships shader
+			// packs whose combo layout doesn't match this engine's stdshaders (e.g. 2007-era
+			// .vcs files). Fall back to the first combo present rather than failing, which
+			// would leave a null shader bound and draw garbage.
+			if ( pFileCache->m_StaticComboRecords.Count() >= 2 )
+			{
+				Warning( "Shader '%s' - Couldn't load combo %d of shader (dyn=%d), using first combo as fallback. Shader files likely don't match this engine version!\n", m_ShaderSymbolTable.String( pFileCache->m_Filename ), lookup.m_nStaticIndex, pFileCache->m_Header.m_nDynamicCombos );
+				nStaticComboIdx = 0;
+			}
+			else
+			{
+				g_pFullFileSystem->Close( hFile );
+				lookup.m_Flags |= SHADER_FAILED_LOAD;
+				Warning( "Shader '%s' - Couldn't load combo %d of shader (dyn=%d)\n", m_ShaderSymbolTable.String( pFileCache->m_Filename ), lookup.m_nStaticIndex, pFileCache->m_Header.m_nDynamicCombos );
+				return false;
+			}
 		}
 
 		nStartingOffset = pFileCache->m_StaticComboRecords[nStaticComboIdx].m_nFileOffset;

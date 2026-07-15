@@ -43,7 +43,11 @@ GLMRendererInfo::GLMRendererInfo( GLMRendererInfoFields *info )
 	// booleans
 	//-------------------------------------------------------------------
 	// gamma writes.
-	m_info.m_hasGammaWrites = true;
+	// OpenGL ES has no GL_FRAMEBUFFER_SRGB toggle, so glEnable( GL_FRAMEBUFFER_SRGB_EXT )
+	// is an invalid enum under ANGLE and sRGB writes silently never happen (output stays
+	// linear -> everything looks dark). Report "no gamma writes" so the translator appends
+	// the fake-sRGB write suffix (flSRGBWrite uniform) to pixel shaders instead.
+	m_info.m_hasGammaWrites = false;
 	
 	
 	// extension string *could* be checked, but on 10.6.3 the ext string is not there, but the func *is*

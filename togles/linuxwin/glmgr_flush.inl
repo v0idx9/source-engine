@@ -253,7 +253,25 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	Assert( m_ViewportBox.GetData().height == (int)( m_ViewportBox.GetData().widthheight >> 16 ) );
 
 	m_pBoundPair->UpdateScreenUniform( m_ViewportBox.GetData().widthheight );
-	
+
+	// Fake sRGB write emulation: when the renderer has no usable GL_FRAMEBUFFER_SRGB
+	// (always the case on GLES), the translator appends an sRGB encode suffix gated by
+	// the flSRGBWrite uniform. Drive it from the client's sRGB-write intent here.
+	// If the bound color target really has sRGB storage, GLES already encodes on write,
+	// so leave the shader suffix off to avoid double conversion.
+	if ( !m_caps.m_hasGammaWrites && ( m_pBoundPair->m_locFragmentFakeSRGBEnable >= 0 ) )
+	{
+		CGLMTex *pAttach0Tex = m_boundDrawFBO ? m_boundDrawFBO->m_attach[ kAttColor0 ].m_tex : NULL;
+		bool bTargetStorageIsSRGB = pAttach0Tex && ( ( pAttach0Tex->m_layout->m_key.m_texFlags & kGLMTexSRGB ) != 0 );
+		float flSRGBWriteValue = ( m_FakeBlendEnableSRGB && !bTargetStorageIsSRGB ) ? 1.0f : 0.0f;
+
+		if ( m_pBoundPair->m_fakeSRGBEnableValue != flSRGBWriteValue )
+		{
+			gGL->glUniform1f( m_pBoundPair->m_locFragmentFakeSRGBEnable, flSRGBWriteValue );
+			m_pBoundPair->m_fakeSRGBEnableValue = flSRGBWriteValue;
+		}
+	}
+
 	GL_BATCH_PERF( m_FlushStats.m_nNumChangedSamplers += m_nNumDirtySamplers );
 
 #if !defined( OSX ) // no support for sampler objects in OSX 10.6 (GL 2.1 profile)
