@@ -672,10 +672,28 @@ void GLMDisplayInfo::PopulateModes( void )
     Assert( !m_modes );
     m_modes = new CUtlVector< GLMDisplayMode* >;
     
-    int rw, rh;
+    int rw = 0, rh = 0;
 	SDL_DisplayMode mode;
-    SDL_GL_GetDrawableSize(SDL_GetWindowFromID(1), &rw, &rh);
 	SDL_GetCurrentDisplayMode(0, &mode);
+	// SDL_GL_GetDrawableSize silently leaves rw/rh untouched (uninitialized garbage,
+	// since they're plain locals here) if window ID 1 doesn't exist yet -- and at
+	// this point, during display/renderer enumeration, no window has been created
+	// yet, so SDL_GetWindowFromID(1) reliably returns NULL. A bogus huge/negative
+	// "native" mode built from that garbage can end up selected as the preferred
+	// display mode (DisplayModeSortFunction favors larger area), which can fail or
+	// hang creating the actual EGL/ANGLE surface with no diagnostic output at all.
+	// Mirror the same pWindow-null fallback the constructor above already uses.
+	SDL_Window *pModeWindow = SDL_GetWindowFromID(1);
+	if ( pModeWindow )
+	{
+		SDL_GL_GetDrawableSize(pModeWindow, &rw, &rh);
+	}
+	if ( rw <= 0 || rh <= 0 )
+	{
+		float fallbackScale = 3.0f;
+		rw = (int)(mode.w * fallbackScale);
+		rh = (int)(mode.h * fallbackScale);
+	}
 	//SDL_GetWindowSize(SDL_GetWindowFromID(1), &w, &h);
 	float scale = (float)rw / mode.w;
     
