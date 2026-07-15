@@ -55,11 +55,14 @@ if [ -d "$ROOT_DIR/ivp" ]; then
 	# them in practice (missed ivu_types.hxx -- the actual file causing the build
 	# failure -- while matching .cxx files fine), so just grep everything under ivp/
 	# instead of trying to filter by extension.
-	IVP_MALLOC_FILES="$(grep -rl '^#ifdef OSX$' "$ROOT_DIR/ivp" 2>/dev/null || true)"
+	# The "#ifdef OSX" line isn't always at column 0 either -- ivu_types.hxx has it
+	# nested ("#   ifdef OSX", indented 3 spaces, inside an outer #if), while the
+	# other 3 files have it unindented. Match either.
+	IVP_MALLOC_FILES="$(grep -rlE '^#[[:space:]]*ifdef OSX[[:space:]]*$' "$ROOT_DIR/ivp" 2>/dev/null || true)"
 	for f in $IVP_MALLOC_FILES; do
-		if grep -A1 '^#ifdef OSX$' "$f" | grep -q 'include <malloc/malloc.h>'; then
+		if grep -A1 -E '^#[[:space:]]*ifdef OSX[[:space:]]*$' "$f" | grep -q 'include <malloc/malloc.h>'; then
 			echo "=== Patching $f: also use <malloc/malloc.h> on iOS (not just OSX) ===" >&2
-			sed -i '' 's/^#ifdef OSX$/#if defined(OSX) || defined(IOS)/' "$f"
+			sed -i '' -E 's/^#([[:space:]]*)ifdef OSX[[:space:]]*$/#\1if defined(OSX) || defined(IOS)/' "$f"
 		fi
 	done
 fi
