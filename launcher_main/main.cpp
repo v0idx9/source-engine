@@ -29,8 +29,10 @@
 #endif
 #ifdef IOS
 #include "SDL2/SDL.h"
+#include <stdarg.h>
 extern "C" void IOS_LaunchDialog( void );
 extern "C" const char *IOS_GetExecDir( void );
+extern "C" const char *IOS_GetDocsDir( void );
 extern "C" int IOS_GetArgs( char ***out );
 #endif
 
@@ -220,8 +222,39 @@ static void WaitForDebuggerConnect( int argc, char *argv[], int time )
 
 #endif // !LINUX
 
+#ifdef IOS
+// Diagnostics for the gap between IOS_LaunchDialog() (which the user confirmed does
+// appear) and CSourceAppSystemGroup::PreInit() creating engine.log (which never
+// appears) -- everything in between currently only reports failures via fprintf to
+// stderr, which is invisible with no Xcode/Console attached to a sideloaded app.
+// Writes progress markers to Documents/boot_diag.log, flushing after every line, so
+// whatever the process's last recorded step was survives even a hard kill.
+static FILE *g_bootDiagFile = NULL;
+static void BootDiag( const char *fmt, ... )
+{
+	if ( !g_bootDiagFile )
+	{
+		const char *docsDir = IOS_GetDocsDir();
+		char path[PATH_MAX];
+		snprintf( path, sizeof(path), "%s/boot_diag.log", docsDir );
+		g_bootDiagFile = fopen( path, "a" );
+		if ( !g_bootDiagFile )
+			return;
+	}
+	va_list args;
+	va_start( args, fmt );
+	vfprintf( g_bootDiagFile, fmt, args );
+	va_end( args );
+	fputc( '\n', g_bootDiagFile );
+	fflush( g_bootDiagFile );
+}
+#endif
+
 int main( int argc, char *argv[] )
 {
+#ifdef IOS
+	BootDiag( "--- main() entered, pid=%d ---", getpid() );
+#endif
 	char ld_path[4196];
 	char *path = "bin/";
 	char *ld_env;
@@ -237,36 +270,60 @@ int main( int argc, char *argv[] )
 	extern char** environ;
 	if( getenv("NO_EXECVE_AGAIN") == NULL )
 	{
+#ifdef IOS
+		// execve() re-execs this same process image; iOS's sandbox disallows
+		// process-spawning syscalls for third-party apps in ways macOS/Linux
+		// don't, so this can behave very differently here (silent kill, or
+		// simply fail and fall through -- execve() only returns on failure).
+		BootDiag( "About to call execve() to re-exec with updated env (iOS sandbox may block this)" );
+#endif
 		setenv("NO_EXECVE_AGAIN", "1", 1);
 		execve(argv[0], argv, environ);
+#ifdef IOS
+		BootDiag( "execve() returned (this only happens on failure) -- continuing without re-exec" );
+#endif
 	}
 
 	#ifndef IOS
 	void *launcher = dlopen( "bin/liblauncher" DLL_EXT_STRING, RTLD_NOW );
 	#else
+	BootDiag( "Calling IOS_LaunchDialog()" );
 	IOS_LaunchDialog();
+	BootDiag( "IOS_LaunchDialog() returned" );
 	argc = IOS_GetArgs(&argv);
 	char basePath[PATH_MAX];
 	strncpy(basePath, IOS_GetExecDir(), sizeof(basePath));
-	void *launcher = dlopen( strcat(basePath, "/liblauncher.dylib"), RTLD_NOW );
+	strcat(basePath, "/liblauncher.dylib");
+	BootDiag( "dlopen(\"%s\")", basePath );
+	void *launcher = dlopen( basePath, RTLD_NOW );
+	BootDiag( "dlopen() returned %p, dlerror=%s", launcher, launcher ? "(none)" : dlerror() );
 	#endif
 	if ( !launcher ) {
 		fprintf( stderr, "%s\nFailed to load the launcher\n", dlerror() );
 	}
-	
+
 	if( !launcher )
 		launcher = dlopen( "bin/launcher" DLL_EXT_STRING, RTLD_NOW );
 
 	if ( !launcher )
 	{
 		fprintf( stderr, "%s\nFailed to load the launcher\n", dlerror() );
+#ifdef IOS
+		BootDiag( "Failed to load the launcher, giving up" );
+#endif
 		return 0;
 	}
 
 	LauncherMain_t launchermain = (LauncherMain_t)dlsym( launcher, "LauncherMain" );
+#ifdef IOS
+	BootDiag( "dlsym(\"LauncherMain\") returned %p", (void*)launchermain );
+#endif
 	if ( !launchermain )
 	{
 		fprintf( stderr, "Failed to load the launcher entry proc\n" );
+#ifdef IOS
+		BootDiag( "Failed to resolve LauncherMain entry point, giving up" );
+#endif
 		return 0;
 	}
 
@@ -309,6 +366,9 @@ int main( int argc, char *argv[] )
 
 	WaitForDebuggerConnect( argc, argv, 30 );
 
+#ifdef IOS
+	BootDiag( "Calling launchermain() -- if boot_diag.log ends here, the crash/hang is inside liblauncher.dylib or deeper (engine.dylib etc), not in this launcher stub" );
+#endif
 	return launchermain( argc, argv );
 }
 
