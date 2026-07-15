@@ -777,6 +777,7 @@ void CSDLMgr::Shutdown()
 bool CSDLMgr::CreateGameWindow( const char *pTitle, bool bWindowed, int width, int height )
 {
 	SDLAPP_FUNC;
+	Msg( "DIAG: CSDLMgr::CreateGameWindow(%dx%d) entered\n", width, height );
 
 	// CreateGameWindow is being called. The the game initially calls this with width and height == 0.
 	//  But we don't want to show the window until it gets resized to what it should be, so we keep track as to whether
@@ -831,19 +832,24 @@ bool CSDLMgr::CreateGameWindow( const char *pTitle, bool bWindowed, int width, i
 		return true;
 	}
 
+	Msg( "DIAG: about to call CreateHiddenGameWindow\n" );
 	if ( CreateHiddenGameWindow( pTitle, width, height ) )
 	{
+		Msg( "DIAG: CreateHiddenGameWindow succeeded, calling SDL_ShowWindow\n" );
 		SDL_ShowWindow( m_Window );
+		Msg( "DIAG: SDL_ShowWindow returned, CreateGameWindow succeeded\n" );
 		return true;
 	}
 	else
 	{
+		Msg( "DIAG: CreateHiddenGameWindow FAILED\n" );
 		return false;
 	}
 }
 
 bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height )
 {
+	Msg( "DIAG: CreateHiddenGameWindow(%dx%d) entered\n", width, height );
 	Assert( !m_Window );
 	Assert( !m_bFullScreen );
 
@@ -871,7 +877,9 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
 	flags |= SDL_WINDOW_OPENGL;
 	#endif
 #endif
+	Msg( "DIAG: about to call SDL_CreateWindow\n" );
 	m_Window = SDL_CreateWindow( pTitle, x, y, width, height, flags );
+	Msg( "DIAG: SDL_CreateWindow returned %p\n", (void*)m_Window );
 
 	if (m_Window == NULL)
 		Error( "Failed to create SDL window: %s", SDL_GetError() );
@@ -913,15 +921,20 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
         EGL_NONE
     };
 
+	Msg( "DIAG: about to call eglGetPlatformDisplay\n" );
 	native_display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, (void*) EGL_DEFAULT_DISPLAY, egl_display_attribs);
+	Msg( "DIAG: eglGetPlatformDisplay returned %p\n", (void*)native_display );
 	if (native_display == EGL_NO_DISPLAY)
     {
-        printf("Failed to get EGL display\n");
+        Msg("DIAG: Failed to get EGL display\n");
     }
 
-	if (eglInitialize(native_display, NULL, NULL) == false)
+	Msg( "DIAG: about to call eglInitialize\n" );
+	bool bEglInit = eglInitialize(native_display, NULL, NULL);
+	Msg( "DIAG: eglInitialize returned %d\n", (int)bEglInit );
+	if (bEglInit == false)
     {
-        printf("Failed to initialize EGL\n");
+        Msg("DIAG: Failed to initialize EGL\n");
     }
 
 	EGLint attribs[] = {
@@ -944,33 +957,47 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
 	SDL_VERSION(&info.version);
 	SDL_GetWindowWMInfo(m_Window, &info);
 
-	if (!eglChooseConfig(native_display, attribs, &config, 1, &numConfigs))
+	Msg( "DIAG: about to call eglChooseConfig\n" );
+	bool bChoseConfig = eglChooseConfig(native_display, attribs, &config, 1, &numConfigs);
+	Msg( "DIAG: eglChooseConfig returned %d, numConfigs=%d\n", (int)bChoseConfig, (int)numConfigs );
+	if (!bChoseConfig)
 	{
-		printf("Failed to choose EGL config\n");
+		Msg("DIAG: Failed to choose EGL config\n");
 	}
 
+	Msg( "DIAG: about to call eglCreateContext\n" );
 	m_GLContext = eglCreateContext(native_display, config, EGL_NO_CONTEXT, contextAttributes);
+	Msg( "DIAG: eglCreateContext returned %p\n", (void*)m_GLContext );
 
 	if (m_GLContext == EGL_NO_CONTEXT) {
-        printf("Failed to create EGL context\n");
+        Msg("DIAG: Failed to create EGL context\n");
     }
 
 	//void* renderLayer = IOS_GetCALayerPointer( &info );
+	Msg( "DIAG: about to call SDL_Metal_CreateView\n" );
 	SDL_MetalView metalView = SDL_Metal_CreateView(m_Window);
-    void *renderLayer = SDL_Metal_GetLayer(metalView); 
+	Msg( "DIAG: SDL_Metal_CreateView returned %p\n", (void*)metalView );
+    void *renderLayer = SDL_Metal_GetLayer(metalView);
+	Msg( "DIAG: SDL_Metal_GetLayer returned %p\n", renderLayer );
 
 	EGLint surface_attributes[] = {
-    EGL_RENDER_BUFFER, EGL_BACK_BUFFER, 
+    EGL_RENDER_BUFFER, EGL_BACK_BUFFER,
     EGL_NONE
 	};
 
+	Msg( "DIAG: about to call eglCreateWindowSurface\n" );
 	surface = eglCreateWindowSurface(native_display, config, (EGLNativeWindowType)renderLayer, surface_attributes);
+	Msg( "DIAG: eglCreateWindowSurface returned %p\n", (void*)surface );
 
-	if (!eglMakeCurrent(native_display, surface, surface, m_GLContext))
+	Msg( "DIAG: about to call eglMakeCurrent\n" );
+	bool bMadeCurrent = eglMakeCurrent(native_display, surface, surface, m_GLContext);
+	Msg( "DIAG: eglMakeCurrent returned %d\n", (int)bMadeCurrent );
+	if (!bMadeCurrent)
     {
-        printf("Failed to make EGL context current\n");
+        Msg("DIAG: Failed to make EGL context current\n");
     }
 #endif
+	Msg( "DIAG: past the ANGLE/EGL setup block\n" );
 
 #if (defined ANDROID || defined IOS) && !defined TOGLES
 	if( l_gl4es )
@@ -1003,7 +1030,9 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
 	}
 #endif // DBGFLAG_ASSERT
 
+	Msg( "DIAG: about to call GetOpenGLEntryPoints (resolves every GL entry point -- if this hangs, look at VoidFnPtrLookup_GlMgr/eglGetProcAddress)\n" );
 	gGL = GetOpenGLEntryPoints(VoidFnPtrLookup_GlMgr);
+	Msg( "DIAG: GetOpenGLEntryPoints returned %p\n", (void*)gGL );
 
 	#if defined( IOS ) && !defined( ANGLE )
 		if ( gGL->m_nSystemFramebufferID == 0 )
@@ -1032,28 +1061,43 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
 		DebugPrintf("\n");
 	}
 
+	Msg( "DIAG: about to call glGenFramebuffers\n" );
 #ifdef TOGLES
 	gGL->glGenFramebuffers(1, &m_readFBO);
 #else
 	gGL->glGenFramebuffersEXT(1, &m_readFBO);
 #endif
+	Msg( "DIAG: glGenFramebuffers returned, m_readFBO=%u\n", (unsigned)m_readFBO );
 
 	gGL->glViewport(0, 0, width, height);    /* Reset The Current Viewport And Perspective Transformation */
 	gGL->glScissor(0, 0, width, height);    /* Reset The Current Viewport And Perspective Transformation */
+	Msg( "DIAG: glViewport/glScissor done\n" );
 
 	// Blank out the initial window, so we're not looking at uninitialized
 	//  video RAM trash until we start proper drawing.
+	// DIAG NOTE: the window is still SDL_WINDOW_HIDDEN here -- CreateGameWindow only
+	// calls SDL_ShowWindow() after this function returns. If SDL_GL_SwapWindow (which
+	// for the ANGLE/EGL path presenting via a CAMetalLayer ultimately needs a Metal
+	// drawable) blocks waiting on that layer being part of an actually-visible
+	// window, this is exactly where a permanent black-screen hang would happen.
 	gGL->glClearColor(0,0,0,0);
 	gGL->glClear(GL_COLOR_BUFFER_BIT);
+	Msg( "DIAG: about to call SDL_GL_SwapWindow #1 (window is still SDL_WINDOW_HIDDEN at this point)\n" );
 	SDL_GL_SwapWindow(m_Window);
+	Msg( "DIAG: SDL_GL_SwapWindow #1 returned\n" );
 	gGL->glClear(GL_COLOR_BUFFER_BIT);
+	Msg( "DIAG: about to call SDL_GL_SwapWindow #2\n" );
 	SDL_GL_SwapWindow(m_Window);
+	Msg( "DIAG: SDL_GL_SwapWindow #2 returned\n" );
 	gGL->glClear(GL_COLOR_BUFFER_BIT);
+	Msg( "DIAG: about to call SDL_GL_SwapWindow #3\n" );
 	SDL_GL_SwapWindow(m_Window);
+	Msg( "DIAG: SDL_GL_SwapWindow #3 returned\n" );
 #endif // DX_TO_GL_ABSTRACTION
 
 	m_WindowWidth = width;
 	m_WindowHeight = height;
+	Msg( "DIAG: CreateHiddenGameWindow about to return true\n" );
 
 	// Update mouse warp targets (dependent on window size).
 	m_nMouseTargetX = m_WindowWidth / 2;
