@@ -45,11 +45,18 @@ GLMRendererInfo::GLMRendererInfo( GLMRendererInfoFields *info )
 	// booleans
 	//-------------------------------------------------------------------
 	// gamma writes.
-	// OpenGL ES has no GL_FRAMEBUFFER_SRGB toggle, so glEnable( GL_FRAMEBUFFER_SRGB_EXT )
-	// is an invalid enum under ANGLE and sRGB writes silently never happen (output stays
-	// linear -> everything looks dark). Report "no gamma writes" so the translator appends
-	// the fake-sRGB write suffix (flSRGBWrite uniform) to pixel shaders instead.
-	m_info.m_hasGammaWrites = false;
+	// NOTE: setting this false (to route gamma through the shader-based fake-sRGB suffix,
+	// since GLES has no GL_FRAMEBUFFER_SRGB) was confirmed on-device to make the ENTIRE
+	// frame render pure black: with m_hasGammaWrites=false the translator emits an
+	// MRT-style `out vec4 _gl_FragData[]` array output plus a log()/exp() sRGB suffix on
+	// every pixel shader, and that fails on ANGLE's Metal backend when the target is the
+	// single-attachment default framebuffer -> every draw produces nothing. Reading the
+	// engine's rendered source texture back showed a uniform 0,0,0 while the present path
+	// was proven good (a forced framebuffer clear reached the screen). Keep this true --
+	// matches the base build that renders (just with low gamma, which the user accepts).
+	// A correct fake-sRGB path is possible but must not change the shader's fragment
+	// output signature; revisit only with on-device verification.
+	m_info.m_hasGammaWrites = true;
 	
 	
 	// extension string *could* be checked, but on 10.6.3 the ext string is not there, but the func *is*
