@@ -1673,23 +1673,45 @@ void CSDLMgr::ShowPixels( CShowPixelsParams *params )
 	tm.Start();
 
 #ifdef IOS
-	// ---- TEMPORARY PRESENT-PATH PROBE (remove once the black screen is understood) ----
-	// The engine boots fully and calls this present every frame at 60fps, but the screen
-	// stays black. On iOS the visible frame arrives via Blit2()->GL_BACK (FBO 0) upstream,
-	// then this function just swaps. Two possibilities remain and only on-device behavior
-	// can tell them apart: (a) the frame content is black but presenting works, or (b) the
-	// CAMetalLayer that ANGLE's window surface renders into is not the layer actually on
-	// screen, so nothing ever shows. To decide: overwrite whatever was drawn with solid
-	// magenta on the default framebuffer immediately before the swap.
-	//   magenta on screen  -> present/swapchain is fine; bug is entirely upstream (content).
-	//   still black        -> the EGL surface / Metal view is not on screen; fix window wiring.
-	if ( gGL )
+	// ---- TEMPORARY SOURCE-TEXTURE READBACK PROBE (remove once the black screen is understood) ----
+	// The magenta probe proved the present/swapchain path works: clearing the default
+	// framebuffer here reaches the screen. So the black screen is upstream -- the content
+	// blitted to the framebuffer is black. Two possibilities remain: (a) the engine renders
+	// a real frame into params->m_srcTexName but Blit2()->GL_BACK silently fails on ANGLE
+	// Metal, or (b) the engine renders black into m_srcTexName (a shader/gamma problem).
+	// Read a few pixels straight out of the engine's rendered source texture and log them:
+	//   non-zero values -> the engine rendered real content; the blit-to-backbuffer is broken.
+	//   all zero        -> the engine rendered black; it's a rendering/gamma problem.
 	{
-		gGL->glBindFramebuffer( GL_FRAMEBUFFER, 0 );
-		gGL->glClearColor( 1.0f, 0.0f, 1.0f, 1.0f );
-		gGL->glClear( GL_COLOR_BUFFER_BIT );
+		static int s_nReadbackCount = 0;
+		if ( gGL && params->m_srcTexName && s_nReadbackCount < 90 )
+		{
+			s_nReadbackCount++;
+			gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, m_readFBO );
+			gGL->glFramebufferTexture2D( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, params->m_srcTexName, 0 );
+
+			int sw = params->m_width, sh = params->m_height;
+			int xs[5] = { sw/2, sw/4, (sw*3)/4, sw/4, (sw*3)/4 };
+			int ys[5] = { sh/2, sh/4, sh/4, (sh*3)/4, (sh*3)/4 };
+			int maxComp = 0;
+			for ( int i = 0; i < 5; i++ )
+			{
+				unsigned char px[4] = { 0, 0, 0, 0 };
+				gGL->glReadPixels( xs[i], ys[i], 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px );
+				if ( px[0] > maxComp ) maxComp = px[0];
+				if ( px[1] > maxComp ) maxComp = px[1];
+				if ( px[2] > maxComp ) maxComp = px[2];
+				if ( i == 0 )
+					Msg( "DIAG: srcTex(%u) %dx%d center RGBA = %d,%d,%d,%d\n",
+						(unsigned)params->m_srcTexName, sw, sh, px[0], px[1], px[2], px[3] );
+			}
+			Msg( "DIAG: srcTex brightest-of-5-samples color component = %d (0=pure black content, >0=real content exists)\n", maxComp );
+
+			gGL->glFramebufferTexture2D( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0 );
+			gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
+		}
 	}
-	// ---- END PRESENT-PATH PROBE ----
+	// ---- END SOURCE-TEXTURE READBACK PROBE ----
 #endif
 
 	if ( s_nDiagShowPixelsCount < 5 )
