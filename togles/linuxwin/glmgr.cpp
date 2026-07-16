@@ -5007,7 +5007,11 @@ void GLMContext::DrawRangeElementsNonInline( GLenum mode, GLuint start, GLuint e
 		#ifndef ANGLE
 		gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
 		#else
-		gGL->glDrawRangeElementsBaseVertexOES( mode, start, end, count, type, indicesActual, baseVertex );
+		// baseVertex is folded into the vertex attribute offsets by FlushDrawStates (see the
+		// ANGLE base-vertex emulation there), so draw with core glDrawRangeElements. Calling
+		// glDrawRangeElementsBaseVertexOES here instead silently drops every draw on ANGLE
+		// builds that don't enable GL_OES_draw_elements_base_vertex.
+		gGL->glDrawRangeElements( mode, start, end, count, type, indicesActual );
 		#endif
 
 #if GLMDEBUG

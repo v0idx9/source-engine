@@ -589,7 +589,31 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 				nBufOffset += pBuf->m_nPersistentBufferStartOffset;
 			}
 
-			SetBufAndVertexAttribPointer( nIndex, pBuf->GetHandle(), 
+#ifdef ANGLE
+			// ANGLE base-vertex emulation -- keep in sync with the draw call in
+			// GLMContext::DrawRangeElements[NonInline], which uses core glDrawRangeElements
+			// instead of a base-vertex draw.
+			//
+			// ANGLE exports the glDrawRangeElementsBaseVertexOES symbol unconditionally, so
+			// the entry-point lookup succeeds (no missing-entry-point error, no null-call
+			// crash), but the call is rejected at draw time with GL_INVALID_OPERATION unless
+			// GL_OES_draw_elements_base_vertex is enabled for the context. ANGLE builds that
+			// don't advertise that extension therefore drop EVERY draw silently, and the
+			// whole frame stays at the clear color (confirmed on-device: the engine's render
+			// target read back as a uniform 0,0,0 while presenting fine at 60fps).
+			//
+			// Offsetting each attribute by nBaseVertex*stride makes index i fetch vertex
+			// (i + nBaseVertex), which is exactly what a base-vertex draw does. nBufOffset
+			// feeds the redundancy cache in SetBufAndVertexAttribPointer, so a changed base
+			// vertex correctly invalidates the cached attrib pointer.
+			if ( nBaseVertex )
+			{
+				const uint nEffectiveStride = pStream->m_stride ? pStream->m_stride : pDeclElem->m_gldecl.GetTotalAttributeSizeInBytes();
+				nBufOffset += nBaseVertex * nEffectiveStride;
+			}
+#endif
+
+			SetBufAndVertexAttribPointer( nIndex, pBuf->GetHandle(),
 				pStream->m_stride, pDeclElem->m_gldecl.m_datatype, pDeclElem->m_gldecl.m_normalized, pDeclElem->m_gldecl.m_nCompCount, 
 				reinterpret_cast< const GLvoid * >( reinterpret_cast< intp >( pBuf->m_pPseudoBuf ) + nBufOffset ), 
 				pBuf->m_nRevision );
