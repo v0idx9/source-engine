@@ -1672,10 +1672,30 @@ void CSDLMgr::ShowPixels( CShowPixelsParams *params )
 	CFastTimer tm;
 	tm.Start();
 
-	if ( s_nDiagShowPixelsCount <= 5 )
+#ifdef IOS
+	// ---- TEMPORARY PRESENT-PATH PROBE (remove once the black screen is understood) ----
+	// The engine boots fully and calls this present every frame at 60fps, but the screen
+	// stays black. On iOS the visible frame arrives via Blit2()->GL_BACK (FBO 0) upstream,
+	// then this function just swaps. Two possibilities remain and only on-device behavior
+	// can tell them apart: (a) the frame content is black but presenting works, or (b) the
+	// CAMetalLayer that ANGLE's window surface renders into is not the layer actually on
+	// screen, so nothing ever shows. To decide: overwrite whatever was drawn with solid
+	// magenta on the default framebuffer immediately before the swap.
+	//   magenta on screen  -> present/swapchain is fine; bug is entirely upstream (content).
+	//   still black        -> the EGL surface / Metal view is not on screen; fix window wiring.
+	if ( gGL )
+	{
+		gGL->glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+		gGL->glClearColor( 1.0f, 0.0f, 1.0f, 1.0f );
+		gGL->glClear( GL_COLOR_BUFFER_BIT );
+	}
+	// ---- END PRESENT-PATH PROBE ----
+#endif
+
+	if ( s_nDiagShowPixelsCount < 5 )
 		Msg( "DIAG: ShowPixels() call #%d about to call SDL_GL_SwapWindow (the real per-frame present)\n", s_nDiagShowPixelsCount );
 	SDL_GL_SwapWindow( m_Window );
-	if ( s_nDiagShowPixelsCount <= 5 )
+	if ( s_nDiagShowPixelsCount < 5 )
 		Msg( "DIAG: ShowPixels() call #%d SDL_GL_SwapWindow returned\n", s_nDiagShowPixelsCount );
 
 	m_flPrevGLSwapWindowTime = tm.GetDurationInProgress().GetMillisecondsF();
