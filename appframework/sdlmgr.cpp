@@ -601,6 +601,9 @@ InitReturnVal_t CSDLMgr::Init()
 #endif
 	m_nWindowRefCount = 0;
 	m_Window = NULL;
+#ifdef ANGLE
+	surface = EGL_NO_SURFACE;	// so DisplayedSize() can tell "no surface yet" from a live one
+#endif
 	m_bFullScreen = false;
 	m_SizeWindowFullScreenState = false;
 	m_nMouseXDelta = 0;
@@ -1089,14 +1092,9 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
 
 	// Blank out the initial window, so we're not looking at uninitialized
 	//  video RAM trash until we start proper drawing.
-	// DIAG NOTE: the window is still SDL_WINDOW_HIDDEN here -- CreateGameWindow only
-	// calls SDL_ShowWindow() after this function returns. If SDL_GL_SwapWindow (which
-	// for the ANGLE/EGL path presenting via a CAMetalLayer ultimately needs a Metal
-	// drawable) blocks waiting on that layer being part of an actually-visible
-	// window, this is exactly where a permanent black-screen hang would happen.
 	gGL->glClearColor(0,0,0,0);
 	gGL->glClear(GL_COLOR_BUFFER_BIT);
-	Msg( "DIAG: about to call SDL_GL_SwapWindow #1 (window is still SDL_WINDOW_HIDDEN at this point)\n" );
+	Msg( "DIAG: about to call SDL_GL_SwapWindow #1\n" );
 	SDL_GL_SwapWindow(m_Window);
 	Msg( "DIAG: SDL_GL_SwapWindow #1 returned\n" );
 	gGL->glClear(GL_COLOR_BUFFER_BIT);
@@ -1671,48 +1669,6 @@ void CSDLMgr::ShowPixels( CShowPixelsParams *params )
 
 	CFastTimer tm;
 	tm.Start();
-
-#ifdef IOS
-	// ---- TEMPORARY SOURCE-TEXTURE READBACK PROBE (remove once the black screen is understood) ----
-	// The magenta probe proved the present/swapchain path works: clearing the default
-	// framebuffer here reaches the screen. So the black screen is upstream -- the content
-	// blitted to the framebuffer is black. Two possibilities remain: (a) the engine renders
-	// a real frame into params->m_srcTexName but Blit2()->GL_BACK silently fails on ANGLE
-	// Metal, or (b) the engine renders black into m_srcTexName (a shader/gamma problem).
-	// Read a few pixels straight out of the engine's rendered source texture and log them:
-	//   non-zero values -> the engine rendered real content; the blit-to-backbuffer is broken.
-	//   all zero        -> the engine rendered black; it's a rendering/gamma problem.
-	{
-		static int s_nReadbackCount = 0;
-		if ( gGL && params->m_srcTexName && s_nReadbackCount < 90 )
-		{
-			s_nReadbackCount++;
-			gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, m_readFBO );
-			gGL->glFramebufferTexture2D( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, params->m_srcTexName, 0 );
-
-			int sw = params->m_width, sh = params->m_height;
-			int xs[5] = { sw/2, sw/4, (sw*3)/4, sw/4, (sw*3)/4 };
-			int ys[5] = { sh/2, sh/4, sh/4, (sh*3)/4, (sh*3)/4 };
-			int maxComp = 0;
-			for ( int i = 0; i < 5; i++ )
-			{
-				unsigned char px[4] = { 0, 0, 0, 0 };
-				gGL->glReadPixels( xs[i], ys[i], 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px );
-				if ( px[0] > maxComp ) maxComp = px[0];
-				if ( px[1] > maxComp ) maxComp = px[1];
-				if ( px[2] > maxComp ) maxComp = px[2];
-				if ( i == 0 )
-					Msg( "DIAG: srcTex(%u) %dx%d center RGBA = %d,%d,%d,%d\n",
-						(unsigned)params->m_srcTexName, sw, sh, px[0], px[1], px[2], px[3] );
-			}
-			Msg( "DIAG: srcTex brightest-of-5-samples color component = %d (0=pure black content, >0=real content exists)\n", maxComp );
-
-			gGL->glFramebufferTexture2D( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0 );
-			gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
-		}
-	}
-	// ---- END SOURCE-TEXTURE READBACK PROBE ----
-#endif
 
 	if ( s_nDiagShowPixelsCount < 5 )
 		Msg( "DIAG: ShowPixels() call #%d about to call SDL_GL_SwapWindow (the real per-frame present)\n", s_nDiagShowPixelsCount );
@@ -2422,9 +2378,35 @@ void CSDLMgr::RenderedSize( uint &width, uint &height, bool set )
 	}
 }
 
-void CSDLMgr::DisplayedSize( uint &width, uint &height ) 
+void CSDLMgr::DisplayedSize( uint &width, uint &height )
 {
 	SDLAPP_FUNC;
+
+#ifdef ANGLE
+	// This is the destination size for the blit that puts the finished frame on screen
+	// (GLMContext::Present -> Blit2 -> GL_BACK), so it has to be the real pixel size of
+	// the thing we present: the EGL window surface, i.e. the CAMetalLayer's drawable.
+	//
+	// Don't ask SDL. This vendored SDL is 2.0.17 and the window isn't a real SDL GL
+	// window (we create our own EGL surface on an SDL_Metal_CreateView layer), so
+	// SDL_GL_GetDrawableSize reports the uikit window in POINTS. On a Retina screen the
+	// drawable is 2x that in each axis, so the frame was blitted into a half-width,
+	// half-height rect anchored at GL's (0,0) origin -- i.e. the game appeared at quarter
+	// size in the bottom-left corner while input still used the full screen.
+	//
+	// eglQuerySurface is the authoritative answer: it returns exactly what ANGLE renders
+	// into, in pixels, with no SDL/points/contentsScale guesswork.
+	EGLint nSurfaceWidth = 0, nSurfaceHeight = 0;
+	if ( ( native_display != EGL_NO_DISPLAY ) && ( surface != EGL_NO_SURFACE ) &&
+	     eglQuerySurface( native_display, surface, EGL_WIDTH, &nSurfaceWidth ) &&
+	     eglQuerySurface( native_display, surface, EGL_HEIGHT, &nSurfaceHeight ) &&
+	     ( nSurfaceWidth > 0 ) && ( nSurfaceHeight > 0 ) )
+	{
+		width = (uint) nSurfaceWidth;
+		height = (uint) nSurfaceHeight;
+		return;
+	}
+#endif
 
 	int w, h;
 	SDL_GL_GetDrawableSize(m_Window, &w, &h);
