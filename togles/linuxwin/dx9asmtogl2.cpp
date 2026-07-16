@@ -3924,13 +3924,16 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		PrintToBufWithIndents( *m_pBufHeaderCode, "vec4 %s;\n\n", g_pAtomicTempVarName );
 	}
 
-	// sRGB Write suffix
+	// sRGB Write suffix (fake linear->sRGB encode for GLES, which has no GL_FRAMEBUFFER_SRGB).
+	// NaN-safety is critical here: the previous form did log(x)/exp() to compute pow(x,1/2.2),
+	// but log(0.0) = -inf, and the final mix() then evaluates as mix(orig, -inf/NaN, flSRGBWrite).
+	// Because GLSL mix() computes a*(1-t) + b*t, a NaN 'b' poisons the result even when t (flSRGBWrite)
+	// is exactly 0.0 (NaN*0.0 = NaN) -- so every draw with sRGB-write DISABLED still emitted NaN and
+	// the frame went black. Compute pow() directly on a non-negative base so the encoded value is always
+	// finite; then mix() with flSRGBWrite==0 is an exact identity (leaves the color untouched).
 	if ( m_bGenerateSRGBWriteSuffix )
 	{
-		StrcatToALUCode( "vec3 sRGBFragData;\n" );
-		StrcatToALUCode( "sRGBFragData.xyz = log( gl_FragData[0].xyz );\n" );
-		StrcatToALUCode( "sRGBFragData.xyz = sRGBFragData.xyz * vec3( 0.454545f, 0.454545f, 0.454545f );\n" );
-		StrcatToALUCode( "sRGBFragData.xyz = exp( sRGBFragData.xyz );\n" );
+		StrcatToALUCode( "vec3 sRGBFragData = pow( max( gl_FragData[0].xyz, vec3( 0.0 ) ), vec3( 0.454545, 0.454545, 0.454545 ) );\n" );
 		StrcatToALUCode( "gl_FragData[0].xyz = mix( gl_FragData[0].xyz, sRGBFragData, flSRGBWrite );\n" );
 	}
 

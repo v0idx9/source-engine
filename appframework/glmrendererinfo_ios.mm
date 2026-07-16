@@ -45,18 +45,23 @@ GLMRendererInfo::GLMRendererInfo( GLMRendererInfoFields *info )
 	// booleans
 	//-------------------------------------------------------------------
 	// gamma writes.
-	// NOTE: setting this false (to route gamma through the shader-based fake-sRGB suffix,
-	// since GLES has no GL_FRAMEBUFFER_SRGB) was confirmed on-device to make the ENTIRE
-	// frame render pure black: with m_hasGammaWrites=false the translator emits an
-	// MRT-style `out vec4 _gl_FragData[]` array output plus a log()/exp() sRGB suffix on
-	// every pixel shader, and that fails on ANGLE's Metal backend when the target is the
-	// single-attachment default framebuffer -> every draw produces nothing. Reading the
-	// engine's rendered source texture back showed a uniform 0,0,0 while the present path
-	// was proven good (a forced framebuffer clear reached the screen). Keep this true --
-	// matches the base build that renders (just with low gamma, which the user accepts).
-	// A correct fake-sRGB path is possible but must not change the shader's fragment
-	// output signature; revisit only with on-device verification.
-	m_info.m_hasGammaWrites = true;
+	// GLES/ANGLE has no GL_FRAMEBUFFER_SRGB, so hardware sRGB-encode-on-write is unavailable.
+	// With this TRUE, glmgr takes the hardware-sRGB branch (which is a no-op on GLES) and the
+	// translator never emits the sRGB-encode suffix -> linear color is written straight to the
+	// non-sRGB default framebuffer and the whole image looks dark/washed out ("low gamma").
+	// Setting it FALSE routes gamma through the shader-based fake-sRGB suffix instead, gated
+	// per-draw by the flSRGBWrite uniform (see glmgr_flush.inl) -- the same path Android GLES
+	// builds use.
+	//
+	// This was previously blamed for an all-black frame and reverted to true, but that black
+	// screen was actually the ANGLE base-vertex draw-drop (every draw silently rejected; fixed
+	// separately in glmgr_flush.inl / glmgr.cpp), NOT this flag -- the source-texture readback
+	// read 0,0,0 because nothing was being drawn at all. With draws working, the only remaining
+	// hazard was the suffix's log(0)->NaN poisoning mix() even when sRGB-write was disabled; that
+	// is now fixed in CTranslationState's SRGBWriteSuffix emit (dx9asmtogl2.cpp) to use a
+	// NaN-safe pow(). With that fix, flSRGBWrite==0 draws are an exact identity, so this can only
+	// improve gamma, never black the frame.
+	m_info.m_hasGammaWrites = false;
 	
 	
 	// extension string *could* be checked, but on 10.6.3 the ext string is not there, but the func *is*
