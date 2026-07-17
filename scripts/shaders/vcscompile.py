@@ -384,9 +384,18 @@ def shader_type_for(basename):
     raise ValueError("cannot infer shader type from %s" % basename)
 
 
-def run_fxc(fxc_exe, src, stype, defines, workdir, idx):
+_obj_seq = None
+
+
+def run_fxc(fxc_exe, src, stype, defines, workdir):
     import subprocess
-    obj = os.path.join(workdir, "s%d.o" % idx)
+    import threading
+    # The object file name MUST be unique per invocation. An earlier version keyed it
+    # on (static*1000+dynamic)%100000, which collides (sid=77,did=0 and sid=177,did=0
+    # both give s77000.o) -- concurrent workers then clobber each other's output, and
+    # the benign outcome is the crash we saw. The malignant one is a worker reading
+    # another's .o and silently packing the wrong bytecode into the .vcs.
+    obj = os.path.join(workdir, "s%d_%d.o" % (threading.get_ident(), next(_obj_seq)))
     args = [fxc_exe, '/nologo', '/T' + stype, '/Dmain=main', '/Emain']
     for (k, v) in defines:
         args.append('/D%s=%s' % (k, v))
@@ -501,6 +510,10 @@ def cmd_compile(args):
               ('NUMDYNAMICCOMBOS', num_dyn), ('FLAGS', '0x0'),
               ('SHADER_MODEL_' + stype.upper(), 1)]
 
+    global _obj_seq
+    import itertools
+    _obj_seq = itertools.count()   # next() is atomic under the GIL
+
     workroot = tempfile.mkdtemp(prefix='vcs_')
     errors = []
     counter = [0]
@@ -511,8 +524,7 @@ def cmd_compile(args):
         entries = []
         for did in dyn_ids:
             defs = common + defines_for(sid, did)
-            code, err = run_fxc(fxc_exe, src, stype, defs, workroot,
-                                (sid * 1000 + did) % 100000)
+            code, err = run_fxc(fxc_exe, src, stype, defs, workroot)
             counter[0] += 1
             if code is None:
                 if len(errors) < 5:
@@ -549,6 +561,94 @@ def cmd_compile(args):
     size = write_vcs(outfile, num_dyn, total, c.centroid_mask, results)
     print("  wrote %s (%d bytes, %d static combos, dyn=%d) in %.0fs"
           % (outfile, size, len(results), num_dyn, time.time() - t0))
+    return 0
+
+
+def cmd_verify(args):
+    """Re-read a .vcs the way CShaderManager does and assert its invariants.
+    Catches a truncated/mis-keyed pack before it ever reaches the device."""
+    path = args.path
+    data = open(path, 'rb').read()
+    if len(data) < 28:
+        print("FAIL: shorter than a header")
+        return 1
+    ver, total, dyn, flags, centroid, nstatic, crc = struct.unpack_from('<iiiIIII', data, 0)
+    print("%s: ver=%d dyn=%d nstatic=%d centroid=0x%x (%d bytes)"
+          % (os.path.basename(path), ver, dyn, nstatic, centroid, len(data)))
+    problems = []
+    if ver != 6:
+        problems.append("version %d != 6" % ver)
+
+    off = 28
+    recs = []
+    for i in range(nstatic):
+        recs.append(struct.unpack_from('<II', data, off))
+        off += 8
+    ndup = struct.unpack_from('<I', data, off)[0]
+    off += 4 + ndup * 8
+
+    if recs[-1][0] != 0xffffffff:
+        problems.append("last record id 0x%x is not the 0xffffffff sentinel" % recs[-1][0])
+    if recs[-1][1] != len(data):
+        problems.append("sentinel offset %d != file size %d" % (recs[-1][1], len(data)))
+    if recs[0][1] != off:
+        problems.append("first record offset %d != end of dictionary %d" % (recs[0][1], off))
+    ids = [r[0] for r in recs[:-1]]
+    if ids != sorted(ids):
+        problems.append("static combo ids are not ascending (binary search would fail)")
+    if len(set(ids)) != len(ids):
+        problems.append("duplicate static combo ids")
+
+    ncombo = 0
+    nblocks = 0
+    for i in range(len(recs) - 1):
+        p = recs[i][1]
+        end = recs[i + 1][1]
+        seen = set()
+        while p < end:
+            bs = struct.unpack_from('<I', data, p)[0]
+            p += 4
+            if bs == 0xffffffff:
+                break
+            kind = bs & 0xc0000000
+            size = bs & 0x3fffffff
+            if kind != BLOCK_UNCOMPRESSED:
+                problems.append("combo %d: block kind 0x%x not uncompressed" % (recs[i][0], kind))
+                break
+            if size > MAX_SHADER_UNPACKED_BLOCK_SIZE:
+                problems.append("combo %d: block %d exceeds max unpacked size" % (recs[i][0], size))
+            blk = data[p:p + size]
+            q = 0
+            while q < len(blk):
+                cid = struct.unpack_from('<I', blk, q)[0]
+                q += 4
+                sz = struct.unpack_from('<I', blk, q)[0]
+                q += 4
+                code = blk[q:q + sz]
+                q += sz
+                if sz < 4 or len(code) != sz:
+                    problems.append("combo %d/%d: truncated bytecode" % (recs[i][0], cid))
+                    continue
+                tok = struct.unpack_from('<I', code, 0)[0]
+                # ps_* shaders start 0xffff.., vs_* start 0xfffe..
+                if (tok >> 16) not in (0xffff, 0xfffe):
+                    problems.append("combo %d/%d: bad shader token 0x%08x" % (recs[i][0], cid, tok))
+                if cid >= dyn:
+                    problems.append("combo %d: dynamic id %d >= dyn count %d" % (recs[i][0], cid, dyn))
+                if cid in seen:
+                    problems.append("combo %d: duplicate dynamic id %d" % (recs[i][0], cid))
+                seen.add(cid)
+                ncombo += 1
+            p += size
+            nblocks += 1
+
+    print("  walked %d static combos, %d blocks, %d dynamic combos" % (len(recs) - 1, nblocks, ncombo))
+    if problems:
+        print("  FAIL (%d problems):" % len(problems))
+        for p_ in problems[:10]:
+            print("    %s" % p_)
+        return 1
+    print("  OK: dictionary, sentinel, block chain and bytecode tokens all consistent")
     return 0
 
 
@@ -600,6 +700,9 @@ def main():
     p.add_argument("src")
     p.add_argument("target")
     p.set_defaults(func=cmd_count)
+    p = sub.add_parser("verify")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_verify)
     p = sub.add_parser("compile")
     p.add_argument("src")
     p.add_argument("target")

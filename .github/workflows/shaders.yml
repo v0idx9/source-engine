@@ -66,6 +66,13 @@ jobs:
             --jobs ${{ github.event.inputs.jobs_per_shader }} `
             --out shaderout
 
+      # Re-read the pack the way CShaderManager does: dictionary ascending, sentinel
+      # at EOF, every block chain walkable, every combo real shader bytecode. A
+      # silently mis-packed .vcs looks exactly like the bug we're fixing, so never
+      # upload one that hasn't been read back.
+      - name: Verify ${{ matrix.target }}.vcs
+        run: python scripts/shaders/vcscompile.py verify shaderout/shaders/fxc/${{ matrix.target }}.vcs
+
       - name: Show result
         run: Get-ChildItem -Recurse shaderout | Select-Object FullName,Length
 
