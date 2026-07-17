@@ -1,0 +1,99 @@
+name: Shaders (.vcs)
+
+# Compiles this engine's stdshaders from source into .vcs shader packs.
+#
+# Why: the retail .vcs that ship in hl2_misc.vpk have diverged from this engine's
+# shader code. lightmappedgeneric_ps20b declares 96 dynamic combos here but the
+# retail file has 288, so CShaderManager divides m_nStaticIndex by the wrong number,
+# misses the lookup, and falls back to combo 0 -- every world surface, prop and VGUI
+# glyph gets drawn by a garbage shader variant. Both HL2 and Portal are affected;
+# Portal ships no shaders of its own and loads hl2_misc.vpk's.
+#
+# Valve's pipeline needs shadercompile.exe (a VMPI farm tool) which nothing in this
+# waf-only tree can build. scripts/shaders/vcscompile.py does the same job by driving
+# the vendored dx9sdk/utilities/fxc.exe directly, so this runs with nothing but a
+# checkout and Python.
+on:
+  workflow_dispatch:
+    inputs:
+      jobs_per_shader:
+        description: "Parallel fxc.exe processes per shader"
+        required: true
+        default: "8"
+
+jobs:
+  # Gate: re-derive every shader's combo multipliers from its .fxc and diff them
+  # against the pre-generated fxctmp9/*.inc -- which are what the engine's C++ was
+  # actually compiled against. If this fails, the index math is wrong and any .vcs
+  # produced below would be silently mis-keyed, so don't build them at all.
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate combo index math against fxctmp9/*.inc
+        run: python scripts/shaders/vcscompile.py validate-inc
+
+  compile:
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      # One job per shader: these are big (lightmappedgeneric alone is ~9.4M static
+      # combos before SKIPs) and a matrix keeps each inside the job time limit.
+      matrix:
+        include:
+          - src: lightmappedgeneric_ps2x.fxc
+            target: lightmappedgeneric_ps20b
+          - src: skin_ps20b.fxc
+            target: skin_ps20b
+          - src: vertexlit_and_unlit_generic_ps2x.fxc
+            target: vertexlit_and_unlit_generic_ps20b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile ${{ matrix.target }}
+        run: |
+          python scripts/shaders/vcscompile.py compile `
+            "${{ matrix.src }}" "${{ matrix.target }}" `
+            --jobs ${{ github.event.inputs.jobs_per_shader }} `
+            --out shaderout
+
+      - name: Show result
+        run: Get-ChildItem -Recurse shaderout | Select-Object FullName,Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcs-${{ matrix.target }}
+          path: shaderout/shaders/fxc/${{ matrix.target }}.vcs
+          if-no-files-found: error
+
+  bundle:
+    needs: compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect every shader artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vcs-*
+          merge-multiple: true
+          path: shaders/fxc
+
+      - name: List
+        run: ls -la shaders/fxc
+
+      # Drop this into portal/custom/<anything>/ (or hl2/custom/<anything>/) --
+      # gameinfo.txt searches custom/* before the VPKs, so these override the
+      # mismatched retail shaders without touching the VPKs themselves.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-engine-shaders
+          path: shaders
+          if-no-files-found: error
