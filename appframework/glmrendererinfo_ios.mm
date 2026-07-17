@@ -13,6 +13,7 @@
 
 #undef MIN
 #undef MAX
+#define DONT_DEFINE_BOOL	// UIKit already typedefs BOOL; basetypes.h would redefine it as int.
 #include "tier0/dbg.h"
 #include "tier0/threadtools.h"
 #include "tier0/icommandline.h"
