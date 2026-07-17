@@ -410,46 +410,106 @@ def run_fxc(fxc_exe, src, stype, defines, workdir):
     return data, None
 
 
-def pack_static_combo(entries):
-    """entries: list of (dynamic_combo_id, bytecode). Returns the block-chain bytes:
-    a sequence of [uint32 size|flags][payload] then the 0xffffffff sentinel, where
-    each payload is a run of [uint32 comboID][uint32 size][bytecode]."""
+BLOCK_LZMA = 0x40000000
+LZMA_ID = (ord('A') << 24) | (ord('M') << 16) | (ord('Z') << 8) | ord('L')   # 'LZMA'
+
+
+def lzma_pack(payload):
+    """Valve's lzma_header_t (tier1/lzmaDecoder.h) followed by props + a raw LZMA1
+    stream -- exactly the bytes CLZMA::Uncompress hands to LzmaDecode, which takes
+    `properties` (LZMA_PROPS_SIZE=5) and the stream separately and decodes a known
+    actualSize. So emit FORMAT_RAW and build the 5 property bytes ourselves:
+    one packed (lc/lp/pb) byte then dict_size LE, which is the SDK's layout."""
+    import lzma
+    lc, lp, pb, dict_size = 3, 0, 2, 1 << 20
+    filters = [{"id": lzma.FILTER_LZMA1, "dict_size": dict_size,
+                "lc": lc, "lp": lp, "pb": pb}]
+    stream = lzma.compress(payload, format=lzma.FORMAT_RAW, filters=filters)
+    props = bytes([(pb * 5 + lp) * 9 + lc]) + struct.pack('<I', dict_size)
+    return struct.pack('<III', LZMA_ID, len(payload), len(stream)) + props + stream
+
+
+def build_payload(entries):
+    """entries: [(dynamic_combo_id, bytecode)] -> the raw unpacked block payload,
+    a run of [uint32 comboID][uint32 size][bytecode]."""
     out = bytearray()
-    cur = bytearray()
-
-    def flush():
-        if not cur:
-            return
-        assert len(cur) <= MAX_SHADER_UNPACKED_BLOCK_SIZE
-        out.extend(struct.pack('<I', BLOCK_UNCOMPRESSED | len(cur)))
-        out.extend(cur)
-
     for (did, code) in entries:
-        rec = struct.pack('<II', did, len(code)) + code
-        if len(rec) > MAX_SHADER_UNPACKED_BLOCK_SIZE:
-            raise ValueError("single combo larger than max block size (%d)" % len(rec))
-        if len(cur) + len(rec) > MAX_SHADER_UNPACKED_BLOCK_SIZE:
-            flush()
-            cur = bytearray()
-        cur.extend(rec)
-    flush()
+        out.extend(struct.pack('<II', did, len(code)))
+        out.extend(code)
+    return bytes(out)
+
+
+def pack_blocks(payload, compress=True):
+    """Split a payload into blocks the loader can consume and terminate the chain.
+    Every block must decompress to <= MAX_SHADER_UNPACKED_BLOCK_SIZE, so we split on
+    the *unpacked* size regardless of compression."""
+    out = bytearray()
+    pos = 0
+    # Split on record boundaries, not arbitrary bytes: each block must contain whole
+    # [id][size][code] records or the reader's inner loop desyncs.
+    bounds = []
+    p = 0
+    start = 0
+    cur = 0
+    while p < len(payload):
+        sz = struct.unpack_from('<I', payload, p + 4)[0]
+        rec = 8 + sz
+        if cur and cur + rec > MAX_SHADER_UNPACKED_BLOCK_SIZE:
+            bounds.append((start, p))
+            start = p
+            cur = 0
+        cur += rec
+        p += rec
+    if start < len(payload):
+        bounds.append((start, len(payload)))
+
+    for (a, b) in bounds:
+        chunk = payload[a:b]
+        if compress:
+            packed = lzma_pack(chunk)
+            # Only take the compressed form if it actually helps.
+            if len(packed) < len(chunk):
+                out.extend(struct.pack('<I', BLOCK_LZMA | len(packed)))
+                out.extend(packed)
+                continue
+        out.extend(struct.pack('<I', BLOCK_UNCOMPRESSED | len(chunk)))
+        out.extend(chunk)
     out.extend(struct.pack('<I', 0xffffffff))
     return bytes(out)
 
 
-def write_vcs(path, num_dyn, total_combos, centroid_mask, static_blocks):
-    """static_blocks: list of (static_combo_id, block_chain_bytes), any order."""
-    static_blocks = sorted(static_blocks, key=lambda x: x[0])
-    n_records = len(static_blocks) + 1          # + sentinel; header counts it
+def write_vcs(path, num_dyn, total_combos, centroid_mask, static_payloads, compress=True):
+    """static_payloads: list of (static_combo_id, raw_payload_bytes), any order.
 
-    header_size = 28
-    dir_size = n_records * 8
-    dup_size = 4                                 # nNumDups == 0
-    data_start = header_size + dir_size + dup_size
+    Static combos whose bytecode is byte-identical share one data block: the
+    canonical one gets a StaticComboRecord_t, the rest get StaticComboAliasRecord_t
+    redirects. That's what version 6 is for ("v5 + duplicate static combo records"),
+    and it is safe precisely because a v6 block keys its entries by DYNAMIC combo id
+    only -- nothing in the block depends on which static combo it came from.
+    FindCombo() searches the alias table first and rewrites the id before looking it
+    up in the main dictionary, and both searches are binary, so both tables must be
+    sorted by static combo id.
+    """
+    canon = {}          # payload -> canonical sid
+    aliases = []        # (sid, source_sid)
+    unique = []         # (sid, payload)
+    for (sid, payload) in sorted(static_payloads, key=lambda x: x[0]):
+        prev = canon.get(payload)
+        if prev is None:
+            canon[payload] = sid
+            unique.append((sid, payload))
+        else:
+            aliases.append((sid, prev))
+    aliases.sort(key=lambda x: x[0])
+
+    blocks = [(sid, pack_blocks(payload, compress)) for (sid, payload) in unique]
+
+    n_records = len(blocks) + 1                  # + sentinel; the header counts it
+    data_start = 28 + n_records * 8 + 4 + len(aliases) * 8
 
     records = []
     off = data_start
-    for (sid, blob) in static_blocks:
+    for (sid, blob) in blocks:
         records.append((sid, off))
         off += len(blob)
     file_size = off
@@ -461,10 +521,12 @@ def write_vcs(path, num_dyn, total_combos, centroid_mask, static_blocks):
                             0, centroid_mask, n_records, 0))
         for (sid, o) in records:
             f.write(struct.pack('<II', sid, o))
-        f.write(struct.pack('<I', 0))            # no dup/alias records
-        for (sid, blob) in static_blocks:
+        f.write(struct.pack('<I', len(aliases)))
+        for (sid, src) in aliases:
+            f.write(struct.pack('<II', sid, src))
+        for (sid, blob) in blocks:
             f.write(blob)
-    return file_size
+    return file_size, len(unique), len(aliases)
 
 
 def cmd_compile(args):
@@ -533,7 +595,7 @@ def cmd_compile(args):
             entries.append((did, code))
         if not entries:
             return None
-        return (sid, pack_static_combo(entries))
+        return (sid, build_payload(entries))
 
     results = []
     try:
@@ -558,10 +620,39 @@ def cmd_compile(args):
     outdir = os.path.join(args.out, 'shaders', 'fxc')
     os.makedirs(outdir, exist_ok=True)
     outfile = os.path.join(outdir, args.target + '.vcs')
-    size = write_vcs(outfile, num_dyn, total, c.centroid_mask, results)
-    print("  wrote %s (%d bytes, %d static combos, dyn=%d) in %.0fs"
-          % (outfile, size, len(results), num_dyn, time.time() - t0))
+    size, nuniq, nalias = write_vcs(outfile, num_dyn, total, c.centroid_mask,
+                                    results, compress=not args.no_compress)
+    print("  wrote %s (%d bytes) in %.0fs" % (outfile, size, time.time() - t0))
+    print("  %d static combos -> %d unique blocks + %d aliases, dyn=%d"
+          % (len(results), nuniq, nalias, num_dyn))
     return 0
+
+
+def lzma_unpack_check(data, p):
+    """Decode a Valve lzma_header_t block the way CLZMA::Uncompress does, so verify
+    actually proves the device can read what we wrote."""
+    import lzma
+    try:
+        ident, actual, lzsize = struct.unpack_from('<III', data, p)
+        if ident != LZMA_ID:
+            return None
+        props = data[p + 12:p + 17]
+        stream = data[p + 17:p + 17 + lzsize]
+        b = props[0]
+        lc = b % 9
+        b //= 9
+        lp = b % 5
+        pb = b // 5
+        dict_size = struct.unpack('<I', props[1:5])[0]
+        filters = [{"id": lzma.FILTER_LZMA1, "dict_size": dict_size,
+                    "lc": lc, "lp": lp, "pb": pb}]
+        out = lzma.LZMADecompressor(format=lzma.FORMAT_RAW,
+                                    filters=filters).decompress(stream)
+        if len(out) != actual:
+            return None
+        return out
+    except Exception:
+        return None
 
 
 def cmd_verify(args):
@@ -585,7 +676,29 @@ def cmd_verify(args):
         recs.append(struct.unpack_from('<II', data, off))
         off += 8
     ndup = struct.unpack_from('<I', data, off)[0]
-    off += 4 + ndup * 8
+    off += 4
+    dups = []
+    for i in range(ndup):
+        dups.append(struct.unpack_from('<II', data, off))
+        off += 8
+
+    # FindCombo() binary-searches the alias table BEFORE the main dictionary, so the
+    # alias table must be ascending, must not repeat, must not shadow a real record,
+    # and every source must actually exist -- otherwise a combo silently resolves to
+    # the wrong shader (or none), which is the failure mode we're fixing.
+    rec_ids = set(r[0] for r in recs[:-1])
+    alias_ids = [d[0] for d in dups]
+    if alias_ids != sorted(alias_ids):
+        problems.append("alias table is not ascending (binary search would fail)")
+    if len(set(alias_ids)) != len(alias_ids):
+        problems.append("duplicate alias ids")
+    for (aid, src) in dups:
+        if src not in rec_ids:
+            problems.append("alias %d -> %d, but %d has no record" % (aid, src, src))
+            break
+        if aid in rec_ids:
+            problems.append("alias %d also has its own record (ambiguous)" % aid)
+            break
 
     if recs[-1][0] != 0xffffffff:
         problems.append("last record id 0x%x is not the 0xffffffff sentinel" % recs[-1][0])
@@ -612,12 +725,18 @@ def cmd_verify(args):
                 break
             kind = bs & 0xc0000000
             size = bs & 0x3fffffff
-            if kind != BLOCK_UNCOMPRESSED:
-                problems.append("combo %d: block kind 0x%x not uncompressed" % (recs[i][0], kind))
+            if kind == BLOCK_UNCOMPRESSED:
+                blk = data[p:p + size]
+            elif kind == BLOCK_LZMA:
+                blk = lzma_unpack_check(data, p)
+                if blk is None:
+                    problems.append("combo %d: lzma block failed to decompress" % recs[i][0])
+                    break
+            else:
+                problems.append("combo %d: block kind 0x%x unsupported by loader" % (recs[i][0], kind))
                 break
-            if size > MAX_SHADER_UNPACKED_BLOCK_SIZE:
-                problems.append("combo %d: block %d exceeds max unpacked size" % (recs[i][0], size))
-            blk = data[p:p + size]
+            if len(blk) > MAX_SHADER_UNPACKED_BLOCK_SIZE:
+                problems.append("combo %d: unpacked block %d exceeds max size" % (recs[i][0], len(blk)))
             q = 0
             while q < len(blk):
                 cid = struct.unpack_from('<I', blk, q)[0]
@@ -642,7 +761,8 @@ def cmd_verify(args):
             p += size
             nblocks += 1
 
-    print("  walked %d static combos, %d blocks, %d dynamic combos" % (len(recs) - 1, nblocks, ncombo))
+    print("  walked %d unique static combos + %d aliases = %d total, %d blocks, %d dynamic combos"
+          % (len(recs) - 1, ndup, len(recs) - 1 + ndup, nblocks, ncombo))
     if problems:
         print("  FAIL (%d problems):" % len(problems))
         for p_ in problems[:10]:
@@ -712,6 +832,8 @@ def main():
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--limit", type=int, default=0,
                    help="only compile the first N static combos (smoke test)")
+    p.add_argument("--no-compress", action="store_true",
+                   help="write uncompressed blocks (much larger; for debugging)")
     p.set_defaults(func=cmd_compile)
     args = ap.parse_args()
     if not getattr(args, "func", None):
