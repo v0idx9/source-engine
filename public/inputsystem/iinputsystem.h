@@ -159,6 +159,11 @@ public:
 	}
 
 	virtual void StartTextInput() = 0;
+
+	// Counterpart to StartTextInput(). On desktop this just stops SDL synthesising
+	// text events, but on iOS/Android SDL_StartTextInput() is what raises the
+	// on-screen keyboard -- so without this the keyboard can never be dismissed.
+	virtual void StopTextInput() = 0;
 };
 
 

@@ -182,6 +182,13 @@ void TextEntry::SetDisabledBgColor(Color col)
 //-----------------------------------------------------------------------------
 void TextEntry::OnKillFocus()
 {
+	// OnMousePressed calls StartTextInput() when this entry is clicked, which on
+	// iOS/Android is what raises the on-screen keyboard. Nothing ever called the
+	// counterpart, so once the keyboard came up there was no way to put it away --
+	// tapping the entry again just re-issues StartTextInput(). Losing focus (tapping
+	// anywhere else) is the natural point to dismiss it.
+	g_pInputSystem->StopTextInput();
+
 	m_szComposition[ 0 ] = L'\0';
 	HideIMECandidates();
 
