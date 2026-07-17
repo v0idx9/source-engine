@@ -9,8 +9,11 @@
 
 #include "GL/gl.h"
 
+#import <UIKit/UIKit.h>
+
 #undef MIN
 #undef MAX
+#include "tier0/dbg.h"
 #include "tier0/threadtools.h"
 #include "tier0/icommandline.h"
 #include "tier1/interface.h"
@@ -22,6 +25,54 @@
 #include "inputsystem/ButtonCode.h"
 
 //===============================================================================
+
+// Authoritative size of the physical screen, in PIXELS, oriented landscape.
+//
+// Do not use SDL for this. SDL's uikit backend enumerates the display during SDL_Init --
+// before any interface orientation has been applied -- so SDL_GetDesktopDisplayMode reports
+// the screen portrait and in POINTS (e.g. 393x852 on an iPhone 14 Pro). Everything
+// downstream inherits that: the engine sizes its render target from it, while the EGL
+// surface we actually present into is the CAMetalLayer's landscape pixel size (2556x1179).
+// GLMContext::Present() blits src->dst with no aspect correction, so a portrait-aspect
+// render target blitted into a landscape surface comes out grossly stretched.
+//
+// UIScreen.nativeBounds needs no window, no EGL surface, and no orientation to have settled:
+// it is the physical screen in pixels, always expressed relative to portrait-up. We swap it
+// to landscape because Info.plist allows only LandscapeLeft/LandscapeRight.
+extern "C" void IOS_GetScreenPixelSize( uint *pWidth, uint *pHeight )
+{
+	static uint s_nCachedWidth = 0, s_nCachedHeight = 0;
+
+	if ( !s_nCachedWidth || !s_nCachedHeight )
+	{
+		CGRect nativeBounds = [[UIScreen mainScreen] nativeBounds];
+
+		uint nWidth  = (uint)nativeBounds.size.width;
+		uint nHeight = (uint)nativeBounds.size.height;
+
+		if ( nWidth < nHeight )
+		{
+			uint nTemp = nWidth;
+			nWidth  = nHeight;
+			nHeight = nTemp;
+		}
+
+		// A zero here would silently propagate into render-target sizes, so refuse it.
+		if ( !nWidth || !nHeight )
+		{
+			nWidth  = 1334;
+			nHeight = 750;
+		}
+
+		s_nCachedWidth  = nWidth;
+		s_nCachedHeight = nHeight;
+
+		Msg( "DIAG: IOS_GetScreenPixelSize: native screen is %ux%u pixels (landscape)\n", s_nCachedWidth, s_nCachedHeight );
+	}
+
+	*pWidth  = s_nCachedWidth;
+	*pHeight = s_nCachedHeight;
+}
 
 GLMRendererInfo::GLMRendererInfo( GLMRendererInfoFields *info )
 {
@@ -62,8 +113,10 @@ GLMRendererInfo::GLMRendererInfo( GLMRendererInfoFields *info )
 	// NaN-safe pow(). With that fix, flSRGBWrite==0 draws are an exact identity, so this can only
 	// improve gamma, never black the frame.
 	m_info.m_hasGammaWrites = false;
-	
-	
+
+	Msg( "DIAG: iOS renderer caps: m_hasGammaWrites=%d (0 => shader fake-sRGB suffix path is active)\n",
+		(int)m_info.m_hasGammaWrites );
+
 	// extension string *could* be checked, but on 10.6.3 the ext string is not there, but the func *is*
 
 	//-------------------------------------------------------------------
@@ -613,32 +666,16 @@ GLMDisplayInfo::GLMDisplayInfo( CGDirectDisplayID displayID, CGOpenGLDisplayMask
 {	
 	m_info.m_cgDisplayID			= displayID;
 	m_info.m_glDisplayMask			= displayMask;
-	
-    SDL_DisplayMode mode;
-    if (SDL_GetCurrentDisplayMode(displayID, &mode) == 0) 
-	{
-        int rw, rh;
-        SDL_Window* pWindow = SDL_GetWindowFromID(1);
-        
-        if ( pWindow )
-        {
-            SDL_GL_GetDrawableSize( pWindow, &rw, &rh );
-            m_info.m_displayPixelWidth  = rw;
-            m_info.m_displayPixelHeight = rh;
-        }
-        else
-        {
 
-            float scale = 3.0f; 
-            m_info.m_displayPixelWidth  = mode.w * scale;
-            m_info.m_displayPixelHeight = mode.h * scale;
-        }
-    } 
-    else 
-	{
-        m_info.m_displayPixelWidth  = 1024; 
-        m_info.m_displayPixelHeight = 768;
-    }
+	// This used to ask SDL for the drawable size and, when no window existed yet (which is
+	// always -- displays are enumerated before window creation), fall back to guessing
+	// "points * 3.0". Both answers carry SDL's portrait orientation, which is what stretched
+	// the frame. Ask the screen directly instead; see IOS_GetScreenPixelSize().
+	uint nPixelWidth = 0, nPixelHeight = 0;
+	IOS_GetScreenPixelSize( &nPixelWidth, &nPixelHeight );
+
+	m_info.m_displayPixelWidth  = nPixelWidth;
+	m_info.m_displayPixelHeight = nPixelHeight;
 
 	m_modes = NULL;
 }
@@ -694,46 +731,26 @@ void GLMDisplayInfo::PopulateModes( void )
 {
     Assert( !m_modes );
     m_modes = new CUtlVector< GLMDisplayMode* >;
-    
-    int rw = 0, rh = 0;
-	SDL_DisplayMode mode;
-	SDL_GetCurrentDisplayMode(0, &mode);
-	// SDL_GL_GetDrawableSize silently leaves rw/rh untouched (uninitialized garbage,
-	// since they're plain locals here) if window ID 1 doesn't exist yet -- and at
-	// this point, during display/renderer enumeration, no window has been created
-	// yet, so SDL_GetWindowFromID(1) reliably returns NULL. A bogus huge/negative
-	// "native" mode built from that garbage can end up selected as the preferred
-	// display mode (DisplayModeSortFunction favors larger area), which can fail or
-	// hang creating the actual EGL/ANGLE surface with no diagnostic output at all.
-	// Mirror the same pWindow-null fallback the constructor above already uses.
-	SDL_Window *pModeWindow = SDL_GetWindowFromID(1);
-	if ( pModeWindow )
-	{
-		SDL_GL_GetDrawableSize(pModeWindow, &rw, &rh);
-	}
-	if ( rw <= 0 || rh <= 0 )
-	{
-		float fallbackScale = 3.0f;
-		rw = (int)(mode.w * fallbackScale);
-		rh = (int)(mode.h * fallbackScale);
-	}
-	//SDL_GetWindowSize(SDL_GetWindowFromID(1), &w, &h);
-	float scale = (float)rw / mode.w;
-    
-	//hardcode all the modes we want to be available
-	GLMDisplayMode *nativeMode = new GLMDisplayMode( rw, rh, mode.refresh_rate );
-    m_modes->AddToTail( nativeMode );
-	GLMDisplayMode *unscaled = new GLMDisplayMode( mode.w, mode.h, mode.refresh_rate );
-    m_modes->AddToTail( unscaled );
-	/*GLMDisplayMode *doubleunscaled = new GLMDisplayMode( mode.w * 2, mode.h * 2, mode.refresh_rate );
-    m_modes->AddToTail( doubleunscaled );*/
-	//for people with iPhone 69 pro max ultra 8k
-	//actually bad idea as it might default to it
-	/*GLMDisplayMode *fourtimesunscaled= new GLMDisplayMode( mode.w * scale + 1, mode.h * scale + 1, mode.refresh_rate );
-    m_modes->AddToTail( fourtimesunscaled );*/
 
-    int displayIndex = 0;
-    int modeCount = 5;
+	// Every mode offered here must have the same aspect ratio as the surface we present
+	// into, because GLMContext::Present() blits the render target across the whole surface
+	// without letterboxing. The old list mixed an SDL "drawable" mode with an SDL "points"
+	// mode, both of which came back portrait-oriented, which is what produced the stretch.
+	uint nPixelWidth = 0, nPixelHeight = 0;
+	IOS_GetScreenPixelSize( &nPixelWidth, &nPixelHeight );
+
+	SDL_DisplayMode mode;
+	int nRefreshHz = 60;
+	if ( SDL_GetCurrentDisplayMode( 0, &mode ) == 0 && mode.refresh_rate > 0 )
+	{
+		nRefreshHz = mode.refresh_rate;
+	}
+
+	// Native: matches the EGL surface exactly, so Present()'s blit is 1:1 (unscaled, sharp).
+	m_modes->AddToTail( new GLMDisplayMode( nPixelWidth, nPixelHeight, nRefreshHz ) );
+
+	// Half-res: same aspect, a cheaper option if the native res is too heavy to drive.
+	m_modes->AddToTail( new GLMDisplayMode( nPixelWidth / 2, nPixelHeight / 2, nRefreshHz ) );
 
     m_modes->Sort( DisplayModeSortFunction );
 }

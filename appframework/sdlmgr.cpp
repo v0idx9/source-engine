@@ -97,6 +97,12 @@ EGLConfig config;
 EGLDisplay native_display;
 #endif
 
+#ifdef IOS
+// Defined in glmrendererinfo_ios.mm (same static lib). Real landscape pixel size of the
+// screen, straight from UIScreen -- SDL reports this display portrait and in points.
+extern "C" void IOS_GetScreenPixelSize( uint *pWidth, uint *pHeight );
+#endif
+
 /*#if IOS
 static void *l_gl4es = NULL;
 static void *l_gles = NULL;
@@ -2359,6 +2365,21 @@ void CSDLMgr::GetNativeDisplayInfo( int nDisplay, uint &nWidth, uint &nHeight, u
 	nRefreshHz = mode.refresh_rate;
 	nWidth = mode.w;
 	nHeight = mode.h;
+
+#ifdef IOS
+	// This is where the engine gets the size it builds its render target from
+	// (CMaterialSystem::ModInit -> pConfig->m_VideoMode). SDL answers portrait and in
+	// points here, but we present into a landscape pixel-sized EGL surface and
+	// GLMContext::Present() blits between them with no aspect correction -- so taking SDL's
+	// answer renders a portrait-aspect frame stretched across a landscape screen.
+	// IOS_GetScreenPixelSize() reports the real landscape pixel size, which also makes the
+	// present blit 1:1 instead of a rescale.
+	IOS_GetScreenPixelSize( &nWidth, &nHeight );
+	if ( nRefreshHz <= 0 )
+	{
+		nRefreshHz = 60;
+	}
+#endif
 }
 
 

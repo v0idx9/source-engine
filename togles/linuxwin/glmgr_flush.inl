@@ -259,13 +259,30 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	// the flSRGBWrite uniform. Drive it from the client's sRGB-write intent here.
 	// If the bound color target really has sRGB storage, GLES already encodes on write,
 	// so leave the shader suffix off to avoid double conversion.
-	if ( !m_caps.m_hasGammaWrites && ( m_pBoundPair->m_locFragmentFakeSRGBEnable >= 0 ) )
+	if ( !m_caps.m_hasGammaWrites )
 	{
 		CGLMTex *pAttach0Tex = m_boundDrawFBO ? m_boundDrawFBO->m_attach[ kAttColor0 ].m_tex : NULL;
 		bool bTargetStorageIsSRGB = pAttach0Tex && ( ( pAttach0Tex->m_layout->m_key.m_texFlags & kGLMTexSRGB ) != 0 );
 		float flSRGBWriteValue = ( m_FakeBlendEnableSRGB && !bTargetStorageIsSRGB ) ? 1.0f : 0.0f;
 
-		if ( m_pBoundPair->m_fakeSRGBEnableValue != flSRGBWriteValue )
+		// Gamma triage. Each of these independently produces "the sRGB encode never happens":
+		//   loc == -1            -> the shader has no flSRGBWrite uniform, i.e. the translator
+		//                           never emitted the encode suffix for this program.
+		//   fakeEnable == 0      -> the client never asked for sRGB writes (D3DRS_SRGBWRITEENABLE).
+		//   targetIsSRGB == 1    -> we deliberately skip the suffix (GLES encodes on write).
+		// Log the first few distinct outcomes so the answer is in the log rather than guessed at.
+		static int s_nDiagSRGBCount = 0;
+		if ( s_nDiagSRGBCount < 12 )
+		{
+			s_nDiagSRGBCount++;
+			Msg( "DIAG: fakeSRGB: loc=%d fakeEnable=%d targetIsSRGB=%d -> flSRGBWrite=%.1f\n",
+				(int)m_pBoundPair->m_locFragmentFakeSRGBEnable,
+				(int)m_FakeBlendEnableSRGB,
+				(int)bTargetStorageIsSRGB,
+				flSRGBWriteValue );
+		}
+
+		if ( ( m_pBoundPair->m_locFragmentFakeSRGBEnable >= 0 ) && ( m_pBoundPair->m_fakeSRGBEnableValue != flSRGBWriteValue ) )
 		{
 			gGL->glUniform1f( m_pBoundPair->m_locFragmentFakeSRGBEnable, flSRGBWriteValue );
 			m_pBoundPair->m_fakeSRGBEnableValue = flSRGBWriteValue;
