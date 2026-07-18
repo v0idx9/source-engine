@@ -43,35 +43,30 @@ jobs:
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      # One job per shader: some are big (lightmappedgeneric alone is ~9.4M static
-      # combos before SKIPs) and a matrix keeps each inside the job time limit.
-      #
-      # This is the COMPLETE set of shaders whose dynamic combo count disagrees with
-      # the .vcs shipped in hl2_misc.vpk -- found by diffing every shader this engine
-      # declares against the retail file, rather than waiting for each to show up in a
-      # log. 18 of the 321 shaders present in both disagree; the other 303 match and
-      # must NOT be rebuilt. Nearly all are a clean 1.5x/3x ratio (retail carries extra
-      # dynamic combos this engine dropped), e.g. lightmappedgeneric 96 vs 288.
       matrix:
         include:
-          - { src: lightmappedgeneric_ps2x.fxc,               target: lightmappedgeneric_ps20b }               # 96 vs 288
-          - { src: skin_ps20b.fxc,                            target: skin_ps20b }                             # 80 vs 120
-          - { src: vertexlit_and_unlit_generic_ps2x.fxc,      target: vertexlit_and_unlit_generic_ps20b }      # 6 vs 18
-          - { src: vertexlit_and_unlit_generic_bump_ps2x.fxc, target: vertexlit_and_unlit_generic_bump_ps20b } # 20 vs 60
-          - { src: eye_refract_ps2x.fxc,                      target: eye_refract_ps20b }                      # 10 vs 30
-          - { src: teeth_bump_ps2x.fxc,                       target: teeth_bump_ps20b }                       # 40 vs 60
-          - { src: refract_ps2x.fxc,                          target: refract_ps20b }                          # 4 vs 6
-          - { src: water_ps2x.fxc,                            target: water_ps20b }                            # 4 vs 6
-          - { src: WaterCheap_ps2x.fxc,                       target: WaterCheap_ps20b }                       # 4 vs 6
-          - { src: sprite_ps2x.fxc,                           target: sprite_ps20b }                           # 4 vs 6
-          - { src: cable_ps2x.fxc,                            target: cable_ps20b }                            # 4 vs 6
-          - { src: eyes_ps2x.fxc,                             target: eyes_ps20b }                             # 4 vs 6
-          - { src: eyes_flashlight_ps2x.fxc,                  target: eyes_flashlight_ps20b }                  # 4 vs 6
-          - { src: teeth_ps2x.fxc,                            target: teeth_ps20b }                            # 4 vs 6
-          - { src: teeth_flashlight_ps2x.fxc,                 target: teeth_flashlight_ps20b }                 # 4 vs 6
-          - { src: decalmodulate_ps2x.fxc,                    target: decalmodulate_ps20b }                    # 2 vs 3
-          - { src: lightmappedgeneric_decal_ps2x.fxc,         target: lightmappedgeneric_decal_ps20b }         # 2 vs 3
-          - { src: windowimposter_ps2x.fxc,                   target: windowimposter_ps20b }                   # 2 vs 3
+          - { src: lightmappedgeneric_ps2x.fxc,               target: lightmappedgeneric_ps20b }
+          - { src: skin_ps20b.fxc,                            target: skin_ps20b }
+          - { src: vertexlit_and_unlit_generic_ps2x.fxc,      target: vertexlit_and_unlit_generic_ps20b }
+          - { src: vertexlit_and_unlit_generic_bump_ps2x.fxc, target: vertexlit_and_unlit_generic_bump_ps20b }
+          - { src: eye_refract_ps2x.fxc,                      target: eye_refract_ps20b }
+          - { src: teeth_bump_ps2x.fxc,                       target: teeth_bump_ps20b }
+          - { src: refract_ps2x.fxc,                          target: refract_ps20b }
+          - { src: water_ps2x.fxc,                            target: water_ps20b }
+          - { src: WaterCheap_ps2x.fxc,                       target: WaterCheap_ps20b }
+          - { src: sprite_ps2x.fxc,                           target: sprite_ps20b }
+          - { src: cable_ps2x.fxc,                            target: cable_ps20b }
+          - { src: eyes_ps2x.fxc,                             target: eyes_ps20b }
+          - { src: eyes_flashlight_ps2x.fxc,                  target: eyes_flashlight_ps20b }
+          - { src: teeth_ps2x.fxc,                            target: teeth_ps20b }
+          - { src: teeth_flashlight_ps2x.fxc,                 target: teeth_flashlight_ps20b }
+          - { src: decalmodulate_ps2x.fxc,                    target: decalmodulate_ps20b }
+          - { src: lightmappedgeneric_decal_ps2x.fxc,         target: lightmappedgeneric_decal_ps20b }
+          - { src: windowimposter_ps2x.fxc,                   target: windowimposter_ps20b }
+          # ADDED: Static prop shaders to fix dark props
+          - { src: staticprop_ps2x.fxc,                       target: staticprop_ps20b }
+          - { src: staticprop_bump_ps2x.fxc,                  target: staticprop_bump_ps20b }
+          - { src: staticprop_lightmapped_ps2x.fxc,           target: staticprop_lightmapped_ps20b }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -85,10 +80,6 @@ jobs:
             --jobs ${{ github.event.inputs.jobs_per_shader }} `
             --out shaderout
 
-      # Re-read the pack the way CShaderManager does: dictionary ascending, sentinel
-      # at EOF, every block chain walkable, every combo real shader bytecode. A
-      # silently mis-packed .vcs looks exactly like the bug we're fixing, so never
-      # upload one that hasn't been read back.
       - name: Verify ${{ matrix.target }}.vcs
         run: python scripts/shaders/vcscompile.py verify shaderout/shaders/fxc/${{ matrix.target }}.vcs
 
@@ -115,9 +106,6 @@ jobs:
       - name: List
         run: ls -la shaders/fxc
 
-      # Drop this into portal/custom/<anything>/ (or hl2/custom/<anything>/) --
-      # gameinfo.txt searches custom/* before the VPKs, so these override the
-      # mismatched retail shaders without touching the VPKs themselves.
       - uses: actions/upload-artifact@v4
         with:
           name: source-engine-shaders
