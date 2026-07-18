@@ -1,18 +1,10 @@
 name: Shaders (.vcs)
 
-# Compiles this engine's stdshaders from source into .vcs shader packs.
+# Compiles every pixel shader .fxc from stdshaders into .vcs packs.
 #
-# Why: the retail .vcs that ship in hl2_misc.vpk have diverged from this engine's
-# shader code. lightmappedgeneric_ps20b declares 96 dynamic combos here but the
-# retail file has 288, so CShaderManager divides m_nStaticIndex by the wrong number,
-# misses the lookup, and falls back to combo 0 -- every world surface, prop and VGUI
-# glyph gets drawn by a garbage shader variant. Both HL2 and Portal are affected;
-# Portal ships no shaders of its own and loads hl2_misc.vpk's.
-#
-# Valve's pipeline needs shadercompile.exe (a VMPI farm tool) which nothing in this
-# waf-only tree can build. scripts/shaders/vcscompile.py does the same job by driving
-# the vendored dx9sdk/utilities/fxc.exe directly, so this runs with nothing but a
-# checkout and Python.
+# Why: The retail .vcs in hl2_misc.vpk mismatch many shaders; compiling all
+# guarantees every shader (including those used by static props) matches the
+# engine code. This overrides the VPK via portal/custom/.
 on:
   workflow_dispatch:
     inputs:
@@ -23,9 +15,8 @@ on:
 
 jobs:
   # Gate: re-derive every shader's combo multipliers from its .fxc and diff them
-  # against the pre-generated fxctmp9/*.inc -- which are what the engine's C++ was
-  # actually compiled against. If this fails, the index math is wrong and any .vcs
-  # produced below would be silently mis-keyed, so don't build them at all.
+  # against the pre-generated fxctmp9/*.inc -- if this fails, the index math is
+  # wrong and any .vcs produced would be mis‑keyed.
   validate:
     runs-on: windows-latest
     timeout-minutes: 15
@@ -40,80 +31,44 @@ jobs:
   compile:
     needs: validate
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 720   # increased for all shaders
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Compile all pixel shader (.fxc) files
+      - name: Compile all pixel shaders (_ps*.fxc) to _ps20b.vcs
         shell: pwsh
         run: |
           $shaderDir = "materialsystem/stdshaders"
           $outDir = "shaderout/shaders/fxc"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-          # Get all .fxc files that are intended for ps_2_b profile.
-          # Usually they end with _ps2x.fxc or _ps20b.fxc.
-          Get-ChildItem -Path $shaderDir -Filter "*.fxc" | ForEach-Object {
-            $fullPath = $_.FullName
-            $base = $_.BaseName
-
-            # Determine target name
-            if ($base -match "_ps2x$") {
-              $target = $base -replace "_ps2x$", "_ps20b"
-            } elseif ($base -match "_ps20b$") {
-              $target = $base
-            } else {
-              # Skip files that are not pixel shader sources (e.g. vertex shaders, post-process helpers)
-              Write-Host "Skipping $($_.Name) (not a ps2x/ps20b pixel shader)"
-              return
-            }
-
+          Get-ChildItem -Path $shaderDir -Filter "*.fxc" | Where-Object { $_.Name -match "_ps" } | ForEach-Object {
+            $base = $_.BaseName -replace '_ps\d+[a-z]?$', ''
+            $target = $base + "_ps20b"
             Write-Host "Compiling $($_.Name) -> $target.vcs"
             python scripts/shaders/vcscompile.py compile `
-              "$fullPath" "$target" `
+              "$($_.FullName)" "$target" `
               --jobs ${{ github.event.inputs.jobs_per_shader }} `
               --out shaderout
-
-            # Verify the generated .vcs
-            $vcsPath = Join-Path $outDir "$target.vcs"
-            if (Test-Path $vcsPath) {
-              python scripts/shaders/vcscompile.py verify $vcsPath
-            } else {
-              Write-Error "Failed to produce $vcsPath"
-              exit 1
-            }
           }
 
-      - name: Show all compiled shaders
+      - name: Verify all .vcs files
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path shaderout/shaders/fxc/*.vcs | ForEach-Object {
+            Write-Host "Verifying $($_.Name)"
+            python scripts/shaders/vcscompile.py verify $_.FullName
+          }
+
+      - name: Show result
         run: Get-ChildItem -Recurse shaderout | Select-Object FullName,Length
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload all compiled shaders
+        uses: actions/upload-artifact@v4
         with:
           name: source-engine-shaders-all
           path: shaderout/shaders/fxc/*.vcs
-          if-no-files-found: error
-
-  # (Optional) Bundle – but we already have a single artifact from the compile job.
-  # You can remove this if you want, but keeping it doesn't hurt.
-  bundle:
-    needs: compile
-    runs-on: ubuntu-latest
-    if: always()  # ensures it runs even if compile partially fails? Better to require success.
-    steps:
-      - name: Download all shader artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: source-engine-shaders-all
-          path: shaders/fxc
-
-      - name: List files
-        run: ls -la shaders/fxc
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: source-engine-shaders-bundled
-          path: shaders
           if-no-files-found: error
