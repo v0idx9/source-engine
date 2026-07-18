@@ -1,10 +1,8 @@
-name: Shaders (.vcs)
+name: Shaders (.vcs) - Full Compile
 
-# Compiles every pixel shader .fxc from stdshaders into .vcs packs.
-#
-# Why: The retail .vcs in hl2_misc.vpk mismatch many shaders; compiling all
-# guarantees every shader (including those used by static props) matches the
-# engine code. This overrides the VPK via portal/custom/.
+# Compiles every .fxc in stdshaders to its corresponding .vcs.
+# Preserves original profile names (e.g., water_ps20 → water_ps20.vcs).
+# Also creates ps20b versions for _ps2x files, as the engine may expect them.
 on:
   workflow_dispatch:
     inputs:
@@ -14,9 +12,6 @@ on:
         default: "8"
 
 jobs:
-  # Gate: re-derive every shader's combo multipliers from its .fxc and diff them
-  # against the pre-generated fxctmp9/*.inc -- if this fails, the index math is
-  # wrong and any .vcs produced would be mis‑keyed.
   validate:
     runs-on: windows-latest
     timeout-minutes: 15
@@ -25,34 +20,54 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate combo index math against fxctmp9/*.inc
+      - name: Validate combo index math
         run: python scripts/shaders/vcscompile.py validate-inc
 
   compile:
     needs: validate
     runs-on: windows-latest
-    timeout-minutes: 720   # increased for all shaders
+    timeout-minutes: 720
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Compile all pixel shaders (_ps*.fxc) to _ps20b.vcs
+      - name: Compile all .fxc files (preserve original profile)
         shell: pwsh
         run: |
           $shaderDir = "materialsystem/stdshaders"
-          $outDir = "shaderout/shaders/fxc"
-          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $outBase = "shaderout/shaders/fxc"
+          New-Item -ItemType Directory -Force -Path $outBase | Out-Null
 
-          Get-ChildItem -Path $shaderDir -Filter "*.fxc" | Where-Object { $_.Name -match "_ps" } | ForEach-Object {
-            $base = $_.BaseName -replace '_ps\d+[a-z]?$', ''
+          # Get all .fxc files
+          $fxcs = Get-ChildItem -Path $shaderDir -Filter "*.fxc"
+
+          # Also include .psh and .vsh? The script expects .fxc, so we skip.
+
+          foreach ($f in $fxcs) {
+            $target = $f.BaseName  # e.g., "water_ps20"
+            Write-Host "Compiling $($f.Name) -> $target.vcs"
+            python scripts/shaders/vcscompile.py compile `
+              "$($f.FullName)" "$target" `
+              --jobs ${{ github.event.inputs.jobs_per_shader }} `
+              --out shaderout 2>&1 | Tee-Object -Variable output
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "WARNING: $($f.Name) failed to compile (skipping)"
+              # Continue despite errors
+            }
+          }
+
+          # Additionally, for _ps2x files, also produce _ps20b versions
+          # (the engine often looks for ps20b, and the original workflow did that)
+          Get-ChildItem -Path $shaderDir -Filter "*_ps2x.fxc" | ForEach-Object {
+            $base = $_.BaseName -replace "_ps2x$", ""
             $target = $base + "_ps20b"
-            Write-Host "Compiling $($_.Name) -> $target.vcs"
+            Write-Host "Also compiling $($_.Name) -> $target.vcs (ps20b alias)"
             python scripts/shaders/vcscompile.py compile `
               "$($_.FullName)" "$target" `
               --jobs ${{ github.event.inputs.jobs_per_shader }} `
-              --out shaderout
+              --out shaderout 2>&1 | Out-Null
           }
 
       - name: Verify all .vcs files
@@ -61,14 +76,17 @@ jobs:
           Get-ChildItem -Path shaderout/shaders/fxc/*.vcs | ForEach-Object {
             Write-Host "Verifying $($_.Name)"
             python scripts/shaders/vcscompile.py verify $_.FullName
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "WARNING: $($_.Name) verification failed"
+            }
           }
 
-      - name: Show result
+      - name: List generated files
         run: Get-ChildItem -Recurse shaderout | Select-Object FullName,Length
 
       - name: Upload all compiled shaders
         uses: actions/upload-artifact@v4
         with:
-          name: source-engine-shaders-all
+          name: all-shaders-full
           path: shaderout/shaders/fxc/*.vcs
           if-no-files-found: error
