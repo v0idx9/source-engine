@@ -41,73 +41,79 @@ jobs:
     needs: validate
     runs-on: windows-latest
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { src: lightmappedgeneric_ps2x.fxc,               target: lightmappedgeneric_ps20b }
-          - { src: skin_ps20b.fxc,                            target: skin_ps20b }
-          - { src: vertexlit_and_unlit_generic_ps2x.fxc,      target: vertexlit_and_unlit_generic_ps20b }
-          - { src: vertexlit_and_unlit_generic_bump_ps2x.fxc, target: vertexlit_and_unlit_generic_bump_ps20b }
-          - { src: eye_refract_ps2x.fxc,                      target: eye_refract_ps20b }
-          - { src: teeth_bump_ps2x.fxc,                       target: teeth_bump_ps20b }
-          - { src: refract_ps2x.fxc,                          target: refract_ps20b }
-          - { src: water_ps2x.fxc,                            target: water_ps20b }
-          - { src: WaterCheap_ps2x.fxc,                       target: WaterCheap_ps20b }
-          - { src: sprite_ps2x.fxc,                           target: sprite_ps20b }
-          - { src: cable_ps2x.fxc,                            target: cable_ps20b }
-          - { src: eyes_ps2x.fxc,                             target: eyes_ps20b }
-          - { src: eyes_flashlight_ps2x.fxc,                  target: eyes_flashlight_ps20b }
-          - { src: teeth_ps2x.fxc,                            target: teeth_ps20b }
-          - { src: teeth_flashlight_ps2x.fxc,                 target: teeth_flashlight_ps20b }
-          - { src: decalmodulate_ps2x.fxc,                    target: decalmodulate_ps20b }
-          - { src: lightmappedgeneric_decal_ps2x.fxc,         target: lightmappedgeneric_decal_ps20b }
-          - { src: windowimposter_ps2x.fxc,                   target: windowimposter_ps20b }
-          # ADDED: Static prop shaders to fix dark props
-          - { src: staticprop_ps2x.fxc,                       target: staticprop_ps20b }
-          - { src: staticprop_bump_ps2x.fxc,                  target: staticprop_bump_ps20b }
-          - { src: staticprop_lightmapped_ps2x.fxc,           target: staticprop_lightmapped_ps20b }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Compile ${{ matrix.target }}
+      - name: Compile all pixel shader (.fxc) files
+        shell: pwsh
         run: |
-          python scripts/shaders/vcscompile.py compile `
-            "${{ matrix.src }}" "${{ matrix.target }}" `
-            --jobs ${{ github.event.inputs.jobs_per_shader }} `
-            --out shaderout
+          $shaderDir = "materialsystem/stdshaders"
+          $outDir = "shaderout/shaders/fxc"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-      - name: Verify ${{ matrix.target }}.vcs
-        run: python scripts/shaders/vcscompile.py verify shaderout/shaders/fxc/${{ matrix.target }}.vcs
+          # Get all .fxc files that are intended for ps_2_b profile.
+          # Usually they end with _ps2x.fxc or _ps20b.fxc.
+          Get-ChildItem -Path $shaderDir -Filter "*.fxc" | ForEach-Object {
+            $fullPath = $_.FullName
+            $base = $_.BaseName
 
-      - name: Show result
+            # Determine target name
+            if ($base -match "_ps2x$") {
+              $target = $base -replace "_ps2x$", "_ps20b"
+            } elseif ($base -match "_ps20b$") {
+              $target = $base
+            } else {
+              # Skip files that are not pixel shader sources (e.g. vertex shaders, post-process helpers)
+              Write-Host "Skipping $($_.Name) (not a ps2x/ps20b pixel shader)"
+              return
+            }
+
+            Write-Host "Compiling $($_.Name) -> $target.vcs"
+            python scripts/shaders/vcscompile.py compile `
+              "$fullPath" "$target" `
+              --jobs ${{ github.event.inputs.jobs_per_shader }} `
+              --out shaderout
+
+            # Verify the generated .vcs
+            $vcsPath = Join-Path $outDir "$target.vcs"
+            if (Test-Path $vcsPath) {
+              python scripts/shaders/vcscompile.py verify $vcsPath
+            } else {
+              Write-Error "Failed to produce $vcsPath"
+              exit 1
+            }
+          }
+
+      - name: Show all compiled shaders
         run: Get-ChildItem -Recurse shaderout | Select-Object FullName,Length
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vcs-${{ matrix.target }}
-          path: shaderout/shaders/fxc/${{ matrix.target }}.vcs
+          name: source-engine-shaders-all
+          path: shaderout/shaders/fxc/*.vcs
           if-no-files-found: error
 
+  # (Optional) Bundle – but we already have a single artifact from the compile job.
+  # You can remove this if you want, but keeping it doesn't hurt.
   bundle:
     needs: compile
     runs-on: ubuntu-latest
+    if: always()  # ensures it runs even if compile partially fails? Better to require success.
     steps:
-      - name: Collect every shader artifact
+      - name: Download all shader artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: vcs-*
-          merge-multiple: true
+          name: source-engine-shaders-all
           path: shaders/fxc
 
-      - name: List
+      - name: List files
         run: ls -la shaders/fxc
 
       - uses: actions/upload-artifact@v4
         with:
-          name: source-engine-shaders
+          name: source-engine-shaders-bundled
           path: shaders
           if-no-files-found: error
